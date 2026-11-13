@@ -561,6 +561,34 @@ function skyscannerUrl(from, to, date) {
     const yymmdd = date.slice(2).replace(/-/g, "");
     return `https://www.skyscanner.net/transport/flights/${from.toLowerCase()}/${to.toLowerCase()}/${yymmdd}/?adultsv2=1&rtn=0`;
 }
+// Google Flights multi-city link. Google encodes the search in a `tfs`
+// parameter: a base64url protobuf. Fields (as used by Google's own URLs):
+//   Info:   3 = flight legs (repeated), 8 = passengers (1 = adult),
+//           9 = cabin (1 = economy), 19 = trip type (2 = one way, 3 = multi-city)
+//   Leg:    2 = date "YYYY-MM-DD", 13 = from airport, 14 = to airport
+//   Airport: 1 = kind (1 = airport code), 2 = IATA code
+function pbVarint(n) {
+    const out = [];
+    while (n > 0x7f) { out.push((n & 0x7f) | 0x80); n >>>= 7; }
+    out.push(n);
+    return out;
+}
+const pbInt = (field, n) => [...pbVarint(field << 3), ...pbVarint(n)];
+const pbBytes = (field, bytes) => [...pbVarint((field << 3) | 2), ...pbVarint(bytes.length), ...bytes];
+const pbStr = (field, str) => pbBytes(field, [...new TextEncoder().encode(str)]);
+
+function googleMultiCityUrl(legs) {   // legs: [{ from, to, date }] with IATA codes
+    const airport = code => [...pbInt(1, 1), ...pbStr(2, code)];
+    const info = [
+        ...legs.flatMap(l => pbBytes(3, [...pbStr(2, l.date), ...pbBytes(13, airport(l.from)), ...pbBytes(14, airport(l.to))])),
+        ...pbInt(8, 1),
+        ...pbInt(9, 1),
+        ...pbInt(19, legs.length > 1 ? 3 : 2),
+    ];
+    const b64 = btoa(String.fromCharCode(...info)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `https://www.google.com/travel/flights/search?tfs=${b64}&hl=en-GB&curr=GBP`;
+}
+
 function searchLinks(from, to, date) {
     return `
         <a class="link-btn" href="${googleUrl(from, to, date)}" target="_blank" rel="noopener">Google ↗</a>
@@ -860,6 +888,8 @@ function renderResults(a, b) {
                     <div class="tags">${tags.join("")}</div>
                     ${legs.map(legHtml).join("")}
                     <div class="total"></div>
+                    <a class="multi-link" target="_blank" rel="noopener" href="${esc(googleMultiCityUrl(legs.map(l => ({ from: l.from.iata, to: l.to.iata, date: l.date }))))}">
+                        Search the whole route on Google Flights (multi-city) ↗</a>
                 </div>
             `;
         });

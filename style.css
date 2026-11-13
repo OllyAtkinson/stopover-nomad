@@ -646,3 +646,12 @@ button:hover {
     animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.multi-link {
+    display: block;
+    margin-top: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #2563eb;
+    text-decoration: none;
+}
+.multi-link:hover { text-decoration: underline; }
