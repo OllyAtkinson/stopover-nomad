@@ -8,7 +8,7 @@ const pricesHandler = require("./api/prices.js");
 
 const ROOT = __dirname;
 const PORT = process.env.PORT || 3000;
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".json": "application/json" };
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml", ".json": "application/json" };
 
 http.createServer((req, res) => {
     const url = new URL(req.url, "http://x");

@@ -23,12 +23,15 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => (
 // OurAirports city names can be long ("Paris (Roissy-en-France, Val-d'Oise)") — keep the first part.
 const placeName = a => (a.city ? a.city.replace(/\s*\(.*$/, "").split(",")[0].trim() : "") || a.name;
 const CURRENCY = "£";
-// "AE" → 🇦🇪 (regional indicator letters)
-const flag = cc => /^[A-Z]{2}$/.test(cc || "") ? String.fromCodePoint(...[...cc].map(c => 0x1F1A5 + c.charCodeAt(0))) : "";
+// Flag image (bundled flag-icons SVGs, so Windows shows real flags too, not "IN").
+// alt is empty where the country name is written next to it.
+const flag = (cc, alt = "") => /^[A-Z]{2}$/.test(cc || "")
+    ? `<img class="flag" src="vendor/flags/${cc.toLowerCase()}.svg" alt="${esc(alt)}" title="${esc(alt)}" width="16" height="12" loading="lazy" onerror="this.remove()">`
+    : "";
 // "IN" → "India" (built into the browser, no data file needed)
 const REGION_NAMES = (() => { try { return new Intl.DisplayNames(["en-GB"], { type: "region" }); } catch { return null; } })();
 const countryName = cc => { try { return (REGION_NAMES && cc && REGION_NAMES.of(cc)) || cc || ""; } catch { return cc || ""; } };
-// "Delhi, India 🇮🇳" (HTML-escaped)
+// "Delhi, India [flag]" (HTML)
 const placeLabel = a => esc([placeName(a), countryName(a.country)].filter(Boolean).join(", ")) + (flag(a.country) ? " " + flag(a.country) : "");
 
 // ---- Map setup -------------------------------------------------
@@ -616,7 +619,7 @@ const fareNote = key => `<div class="fare-note" data-note-key="${esc(key)}">${fa
 const PRICE_API = window.PRICE_API_URL || "api/prices";
 let liveState = "unknown";      // "unknown" | "off" (no backend / no token) | "on" | "error"
 let searchSeq = 0;              // ignores responses from a search the user has since replaced
-const MANUAL_NOTE = `"Best guess" puts budget airlines, airline changes and big hubs first. Add leg prices, then sort by cheapest total.`;
+const MANUAL_NOTE = `No prices yet, so "cheapest" is a best guess (budget airlines, airline changes, big hubs). Add leg prices to rank by real totals.`;
 
 function fareNoteHtml(key) {
     if (!autoFares.has(key) || typedKeys.has(key)) return "";
@@ -686,7 +689,6 @@ async function fetchFares(seq) {
 
     keys.forEach(applyAutoFare);
     doneMsg();
-    if (!userPickedSort) sortMode = "price";
     updateTotals();
     applySort();
 }
@@ -734,33 +736,42 @@ function updateTotals() {
     }
 }
 
-// "best" = the route-data guess order; "price" = cheapest entered total first.
-let sortMode = "best";
-let userPickedSort = false;   // once they choose, auto prices stop switching it for them
+// ---- Ranking: cheapest ←→ most countries -------------------------------------------------
+// rankWeight 0 = cheapest total first, 100 = most new countries first, in between blends the two:
+//   score = (1 − w) · price + w · (1 − countries), both scaled 0–1 across the current results.
+// With no prices yet, "price" falls back to the best-guess order from the route data.
+let rankWeight = 0;
+try { rankWeight = Math.min(100, Math.max(0, +localStorage.getItem("rankWeight") || 0)); } catch { /* storage blocked */ }
+
+const rankLabel = w => w <= 10 ? "Cheapest first" : w >= 90 ? "Most countries first" : w < 40 ? "Mostly cheapest" : w > 60 ? "Mostly countries" : "Balanced";
 
 function applySort() {
     const list = resultsPanel.querySelector(".option-list");
     if (!list) return;
-    resultsPanel.querySelectorAll("[data-sort]").forEach(btn =>
-        btn.classList.toggle("active", btn.dataset.sort === sortMode));
+    const label = resultsPanel.querySelector(".rank-value");
+    if (label) label.textContent = rankLabel(rankWeight);
+
     const cards = [...list.querySelectorAll(".option")];
-    cards.sort((x, y) => {
-        if (sortMode === "price") {
-            const tx = x._total, ty = y._total;
-            if (tx != null && ty != null && tx !== ty) return tx - ty;
-            if (tx != null && ty == null) return -1;
-            if (tx == null && ty != null) return 1;
-        }
-        return +x.dataset.idx - +y.dataset.idx;
-    });
+    const totals = cards.map(c => c._total).filter(t => t != null);
+    const lo = Math.min(...totals), hi = Math.max(...totals);
+    const maxCountries = Math.max(0, ...cards.map(c => +c.dataset.countries || 0));
+    const w = rankWeight / 100;
+    const priceScore = c => {
+        if (!totals.length) return cards.length > 1 ? +c.dataset.idx / (cards.length - 1) : 0;
+        if (c._total == null) return 1.5;                 // unpriced after priced ones
+        return hi > lo ? (c._total - lo) / (hi - lo) : 0;
+    };
+    const countryScore = c => maxCountries ? 1 - (+c.dataset.countries || 0) / maxCountries : 0;
+    const score = new Map(cards.map(c => [c, (1 - w) * priceScore(c) + w * countryScore(c)]));
+    // Ties (e.g. same number of countries) go to the cheaper route, then the best guess.
+    cards.sort((x, y) => (score.get(x) - score.get(y)) || (priceScore(x) - priceScore(y)) || (+x.dataset.idx - +y.dataset.idx));
     cards.forEach(c => list.appendChild(c));
 }
 
-resultsPanel.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-sort]");
-    if (!btn) return;
-    sortMode = btn.dataset.sort;
-    userPickedSort = true;
+resultsPanel.addEventListener("input", (e) => {
+    if (!e.target.classList.contains("rank-slider")) return;
+    rankWeight = +e.target.value;
+    try { localStorage.setItem("rankWeight", String(rankWeight)); } catch { /* storage blocked */ }
     applySort();
 });
 
@@ -774,7 +785,7 @@ resultsPanel.addEventListener("change", (e) => {
         applyAutoFare(key);
         updateTotals();
     }
-    if (sortMode === "price") applySort();
+    applySort();
 });
 
 resultsPanel.addEventListener("input", (e) => {
@@ -831,10 +842,11 @@ function renderResults(a, b) {
         html += `<div class="options-label">2 · ${stops}-stop splits <span class="sub">— ${usingEstimate
             ? "no confirmed split in the route data; these are hubs on the way, check both legs exist"
             : `${tickets} separate tickets`}</span></div>
-            <div class="sort-bar">
-                <span>Sort</span>
-                <button type="button" data-sort="best">Best guess</button>
-                <button type="button" data-sort="price">Cheapest total</button>
+            <div class="rank-bar">
+                <div class="rank-head"><span>Rank by</span><strong class="rank-value">${rankLabel(rankWeight)}</strong></div>
+                <input class="rank-slider" type="range" min="0" max="100" step="5" value="${rankWeight}"
+                    aria-label="Rank routes from cheapest (left) to most new countries (right)">
+                <div class="rank-ends"><span>💷 Cheapest</span><span>Most countries 🌍</span></div>
             </div>
             <p class="sort-note live-status">${liveState === "off" || liveState === "error" ? MANUAL_NOTE : ""}</p>
             <div class="option-list">`;
@@ -850,7 +862,7 @@ function renderResults(a, b) {
             const homeCountries = new Set([a.country, b.country, s.o.country, s.d.country]);
             const newCountries = [...new Set(s.hubs.map(h => h.country).filter(c => c && !homeCountries.has(c)))];
             const tags = [];
-            if (newCountries.length) tags.push(`<span class="tag country">${newCountries.map(flag).join(" ")} +${newCountries.length} countr${newCountries.length > 1 ? "ies" : "y"}</span>`);
+            if (newCountries.length) tags.push(`<span class="tag country">${newCountries.map(c => flag(c, countryName(c))).join("")} +${newCountries.length} countr${newCountries.length > 1 ? "ies" : "y"}</span>`);
             if (s.estimate) tags.push(`<span class="tag warn">Unconfirmed</span>`);
             if (s.budgetLegs > 0) tags.push(`<span class="tag good">Budget airline${s.budgetLegs > 1 ? `s on ${s.budgetLegs} legs` : ""}</span>`);
             if (s.airlineChanges > 0) tags.push(`<span class="tag">${s.airlineChanges === stops ? "Different airlines" : "Airline change"}</span>`);
@@ -942,7 +954,6 @@ function renderResults(a, b) {
 
     drawSplit(0);
     updateTotals();
-    if (liveState === "on" && !userPickedSort) sortMode = "price";
     applySort();
     fetchFares(++searchSeq);
 }
