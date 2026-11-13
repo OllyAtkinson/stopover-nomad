@@ -25,6 +25,11 @@ const placeName = a => (a.city ? a.city.replace(/\s*\(.*$/, "").split(",")[0].tr
 const CURRENCY = "£";
 // "AE" → 🇦🇪 (regional indicator letters)
 const flag = cc => /^[A-Z]{2}$/.test(cc || "") ? String.fromCodePoint(...[...cc].map(c => 0x1F1A5 + c.charCodeAt(0))) : "";
+// "IN" → "India" (built into the browser, no data file needed)
+const REGION_NAMES = (() => { try { return new Intl.DisplayNames(["en-GB"], { type: "region" }); } catch { return null; } })();
+const countryName = cc => { try { return (REGION_NAMES && cc && REGION_NAMES.of(cc)) || cc || ""; } catch { return cc || ""; } };
+// "Delhi, India 🇮🇳" (HTML-escaped)
+const placeLabel = a => esc([placeName(a), countryName(a.country)].filter(Boolean).join(", ")) + (flag(a.country) ? " " + flag(a.country) : "");
 
 // ---- Map setup -------------------------------------------------
 const WORLD_BOUNDS = L.latLngBounds([-85, -180], [85, 180]);
@@ -79,7 +84,7 @@ AIRPORTS.forEach(a => {
     a._iata = a.iata.toLowerCase();
     a._city = (a.city || "").toLowerCase();
     a._name = a.name.toLowerCase();
-    a._search = `${a.iata} ${a.icao} ${a.name} ${a.city} ${a.country}`.toLowerCase();
+    a._search = `${a.iata} ${a.icao} ${a.name} ${a.city} ${a.country} ${countryName(a.country)}`.toLowerCase();
 });
 
 function connectionCount(iata) {
@@ -117,13 +122,13 @@ AIRPORTS.forEach(a => {
     });
 
     const connLabel = conns > 0 ? `${conns} nonstop route${conns === 1 ? "" : "s"}` : "no route data";
-    m.bindTooltip(`${esc(a.iata)} · ${esc(placeName(a))} · ${connLabel}`, { direction: "top", opacity: 0.9, offset: [0, -4] });
+    m.bindTooltip(`${esc(a.iata)} · ${placeLabel(a)} · ${connLabel}`, { direction: "top", opacity: 0.9, offset: [0, -4] });
 
     m.bindPopup(`
         <div class="airport-popup">
             <div class="airport-popup-code">${esc(a.iata)}</div>
             <div class="airport-popup-name">${esc(a.name)}</div>
-            <div class="airport-popup-city">${a.city ? esc(a.city) + ", " : ""}${esc(a.country)}</div>
+            <div class="airport-popup-city">${placeLabel(a)}</div>
             <div class="airport-popup-conns">${connLabel}</div>
             <div class="airport-popup-actions">
                 <button data-role="from" data-iata="${esc(a.iata)}">Set as From</button>
@@ -209,7 +214,7 @@ function renderSuggestions(listEl, items, role) {
     if (!items.length) { listEl.classList.remove("open"); return; }
     items.forEach(a => {
         const li = document.createElement("li");
-        li.innerHTML = `<span class="sugg-code">${esc(a.iata)}</span><span class="sugg-info">${esc(a.name)}${a.city ? " · " + esc(a.city) : ""}, ${esc(a.country)}</span>`;
+        li.innerHTML = `<span class="sugg-code">${esc(a.iata)}</span><span class="sugg-info">${esc(a.name)}${a.city ? " · " + esc(placeName(a)) : ""}, ${esc(countryName(a.country))} ${flag(a.country)}</span>`;
         li.addEventListener("mousedown", (e) => {
             e.preventDefault();
             setField(role, a.iata);
@@ -357,7 +362,7 @@ function markPoint(a, label, cls = "") {
         iconAnchor: [7, 7]
     });
     L.marker([a.lat, a.lon], { icon, zIndexOffset: 1000 })
-        .bindTooltip(`${esc(label)}: ${esc(a.iata)} — ${esc(placeName(a))}`, { direction: "top", offset: [0, -8] })
+        .bindTooltip(`${esc(label)}: ${esc(a.iata)} — ${placeLabel(a)}`, { direction: "top", offset: [0, -8] })
         .addTo(endpointMarkers);
 }
 
@@ -779,7 +784,7 @@ function renderResults(a, b) {
     let html = `
         <div class="result-header">
             <div class="result-route">${esc(a.iata)} <span class="arrow">→</span> ${esc(b.iata)}</div>
-            <div class="result-sub">${esc(placeName(a))} to ${esc(placeName(b))} · ${Math.round(direct).toLocaleString()} km · ${prettyDate(date1)}</div>
+            <div class="result-sub">${placeLabel(a)} to ${placeLabel(b)} · ${Math.round(direct).toLocaleString()} km · ${prettyDate(date1)}</div>
         </div>
 
         <div class="options-label">1 · Price to beat <span class="sub">— one ticket all the way</span></div>
@@ -840,10 +845,10 @@ function renderResults(a, b) {
                 </div>`;
 
             const title = stops === 1
-                ? `via ${esc(s.hubs[0].iata)} — ${esc(placeName(s.hubs[0]))}`
+                ? `via ${esc(s.hubs[0].iata)} — ${placeLabel(s.hubs[0])}`
                 : `via ${s.hubs.map(h => esc(h.iata)).join(" → ")}`;
             const subtitle = stops === 1 ? "" :
-                `<div class="option-places">${s.hubs.map(h => esc(placeName(h))).join(" → ")}</div>`;
+                `<div class="option-places">${s.hubs.map(placeLabel).join(" → ")}</div>`;
 
             html += `
                 <div class="option${i === 0 ? " selected" : ""}" data-idx="${i}" data-countries="${newCountries.length}" data-keys="${esc(legs.map(l => l.key).join("|"))}">
