@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { lookupLegs, pickFare, monthsAround, _cache } = require("../lib/prices.js");
+const { lookupWindows, cheapestByDay, monthsBetween, _cache } = require("../lib/prices.js");
 
 function fakeFetch(table, calls = []) {
     return async (url, opts) => {
@@ -11,53 +11,54 @@ function fakeFetch(table, calls = []) {
     };
 }
 
-test("monthsAround spans a month boundary", () => {
-    assert.deepStrictEqual(monthsAround("2026-12-30"), ["2026-12", "2027-01"]);
-    assert.deepStrictEqual(monthsAround("2026-12-15"), ["2026-12"]);
+test("monthsBetween covers every month a window touches", () => {
+    assert.deepStrictEqual(monthsBetween("2026-12-28", "2027-01-03"), ["2026-12", "2027-01"]);
+    assert.deepStrictEqual(monthsBetween("2026-12-01", "2026-12-31"), ["2026-12"]);
+    assert.deepStrictEqual(monthsBetween("2026-11-30", "2027-01-01"), ["2026-11", "2026-12", "2027-01"]);
 });
 
-test("pickFare prefers the exact day, else cheapest within ±3 days", () => {
-    const rows = [
+test("cheapestByDay keeps the cheapest fare on each day", () => {
+    const d = cheapestByDay([
         { price: 300, departure_at: "2026-12-14T10:00:00+00:00" },
         { price: 250, departure_at: "2026-12-14T22:00:00+00:00" },
         { price: 100, departure_at: "2026-12-16T10:00:00+00:00" },
-        { price: 50, departure_at: "2026-12-25T10:00:00+00:00" },
-    ];
-    assert.strictEqual(pickFare(rows, "2026-12-14").exact.price, 250);
-    assert.strictEqual(pickFare(rows, "2026-12-13").exact, null);
-    assert.strictEqual(pickFare(rows, "2026-12-13").near.price, 100);
-    assert.strictEqual(pickFare(rows, "2026-12-01").near, null);
+        { price: "x", departure_at: "2026-12-17T10:00:00+00:00" },
+    ]);
+    assert.deepStrictEqual(Object.keys(d).sort(), ["2026-12-14", "2026-12-16"]);
+    assert.strictEqual(d["2026-12-14"].price, 250);
 });
 
-test("lookupLegs returns fares, adds marker, caches months", async () => {
+test("lookupWindows returns per-day fares inside the window, caches months, adds marker", async () => {
     _cache.clear();
     const calls = [];
     const fetchImpl = fakeFetch({
-        "LHR-AUH-2026-12": [{ price: 210, departure_at: "2026-12-14T09:00:00+04:00", airline: "EY", transfers: 0, link: "/LON1412AUH1?t=abc" }],
-        "AUH-HAN-2026-12": [{ price: 180, departure_at: "2026-12-18T09:00:00+04:00", airline: "VJ", transfers: 1 }],
+        "LHR-AUH-2026-12": [
+            { price: 210, departure_at: "2026-12-14T09:00:00+04:00", airline: "EY", transfers: 0, link: "/LON1412AUH1?t=abc" },
+            { price: 190, departure_at: "2026-12-20T09:00:00+04:00", airline: "EY", transfers: 0 },
+        ],
+        "AUH-HAN-2026-12": [{ price: 180, departure_at: "2026-12-31T09:00:00+04:00", airline: "VJ", transfers: 1 }],
+        "AUH-HAN-2027-01": [{ price: 150, departure_at: "2027-01-02T09:00:00+04:00", airline: "VJ", transfers: 0 }],
     }, calls);
-    const legs = [
-        { from: "LHR", to: "AUH", date: "2026-12-14" },
-        { from: "lhr", to: "auh", date: "2026-12-15" }, // same month → cached
-        { from: "AUH", to: "HAN", date: "2026-12-17" },
-        { from: "AUH", to: "XXX", date: "2026-12-17" },
-    ];
-    const out = await lookupLegs(legs, { token: "t", marker: "123", fetchImpl });
-    assert.strictEqual(out[0].fare.price, 210);
-    assert.strictEqual(out[0].fare.exactDate, true);
-    assert.strictEqual(out[0].fare.link, "https://www.aviasales.com/LON1412AUH1?t=abc&marker=123");
-    assert.strictEqual(out[1].fare.exactDate, false);
-    assert.strictEqual(out[1].fare.date, "2026-12-14");
-    assert.strictEqual(out[2].fare.transfers, 1);
-    assert.strictEqual(out[3].fare, null);
-    assert.strictEqual(calls.length, 3, "LHR-AUH month fetched once");
+    const out = await lookupWindows([
+        { from: "LHR", to: "AUH", start: "2026-12-13", end: "2026-12-16" },
+        { from: "lhr", to: "auh", start: "2026-12-18", end: "2026-12-22" },  // same month → cached
+        { from: "AUH", to: "HAN", start: "2026-12-30", end: "2027-01-03" },
+    ], { token: "t", marker: "123", fetchImpl });
+    assert.deepStrictEqual(Object.keys(out[0].days), ["2026-12-14"]);
+    assert.strictEqual(out[0].days["2026-12-14"].link, "https://www.aviasales.com/LON1412AUH1?t=abc&marker=123");
+    assert.deepStrictEqual(Object.keys(out[1].days), ["2026-12-20"]);
+    assert.deepStrictEqual(Object.keys(out[2].days).sort(), ["2026-12-31", "2027-01-02"]);
+    assert.strictEqual(calls.length, 3, "LHR-AUH December fetched once");
     assert.strictEqual(calls[0].opts.headers["X-Access-Token"], "t");
     assert.ok(!calls[0].url.includes("token="), "token not in URL");
 });
 
-test("lookupLegs rejects bad input and bad tokens", async () => {
+test("lookupWindows rejects bad input and bad tokens", async () => {
     _cache.clear();
-    await assert.rejects(lookupLegs([{ from: "LHR", to: "AUH", date: "tomorrow" }], { token: "t", fetchImpl: fakeFetch({}) }), /bad leg/);
+    const ok = fakeFetch({});
+    await assert.rejects(lookupWindows([{ from: "LHR", to: "AUH", start: "soon", end: "2026-12-14" }], { token: "t", fetchImpl: ok }), /bad window/);
+    await assert.rejects(lookupWindows([{ from: "LHR", to: "AUH", start: "2026-12-14", end: "2026-12-10" }], { token: "t", fetchImpl: ok }), /window must be/);
+    await assert.rejects(lookupWindows([{ from: "LHR", to: "AUH", start: "2026-12-01", end: "2027-03-01" }], { token: "t", fetchImpl: ok }), /window must be/);
     const denied = async () => ({ ok: false, status: 401, json: async () => ({}) });
-    await assert.rejects(lookupLegs([{ from: "LHR", to: "AUH", date: "2026-12-14" }], { token: "t", fetchImpl: denied }), /token/);
+    await assert.rejects(lookupWindows([{ from: "LHR", to: "AUH", start: "2026-12-14", end: "2026-12-14" }], { token: "t", fetchImpl: denied }), /token/);
 });

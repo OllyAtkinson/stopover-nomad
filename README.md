@@ -1,8 +1,19 @@
 # Stopover Nomad
 
-Find routes with extra stops that **cost less than one ticket** and **tick off more countries**.
-For example, London → Abu Dhabi → Singapore → Hanoi might beat a direct London → Hanoi fare
+Say how long you have to get somewhere, and Stopover Nomad fits in stopovers that
+**cost less than flying direct** and **tick off more countries**. For example, with 3 days to
+get from London to Hanoi, London → Abu Dhabi → Singapore → Hanoi might beat the direct fare
 and add two countries to your list.
+
+## How a search works
+
+- **Time to get there**: the most days between your first and last flight.
+- **Stops**: the most stopovers to try. Routes with 1 up to that many stops are shown together,
+  alongside the direct flight.
+- **Time at each stop**: the shortest stay you want at each stopover, from a quick connection up
+  to 3 nights.
+- One slider ranks every option, the direct flight included, from **cheapest** to **most new
+  countries**.
 
 ## How prices work
 
@@ -10,10 +21,13 @@ The map and route search run entirely in the browser. Prices come from a small b
 (`api/prices.js`) that looks up each flight using the
 [Travelpayouts / Aviasales Data API](https://support.travelpayouts.com/hc/en-us/articles/203956163).
 
+- For every flight, it looks up fares across all the days that could fit your time budget.
+  The app then picks the cheapest set of dates for each route.
 - These are **recently seen fares** (cached from real Aviasales searches), not a live quote.
   That makes them cheap enough to check dozens of split routes at once. Users still confirm
   the price via the Google / Skyscanner / Aviasales links before booking.
-- If a flight has no fare on the exact day, the cheapest within ±3 days is used and marked.
+- If no route can start on your exact departure day, the first flight can move up to 3 days
+  either way. This is marked on the card.
 - Typing a price into any box overrides the looked-up price. Clearing the box brings it back.
 - With no backend or no token, the app falls back to typing prices in by hand.
 
