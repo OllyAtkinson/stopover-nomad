@@ -1,0 +1,10 @@
+{
+  "name": "stopover-nomad",
+  "private": true,
+  "description": "Find multi-stop split-ticket routes that are cheaper than one ticket and tick off more countries.",
+  "scripts": {
+    "dev": "node dev-server.js",
+    "test": "node --test test/prices.test.js"
+  },
+  "engines": { "node": ">=18" }
+}

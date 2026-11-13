@@ -614,3 +614,35 @@ button:hover {
     line-height: 1.4;
     margin-bottom: 10px;
 }
+
+/* ---- Automatic prices ---- */
+.price-input.auto {
+    background: #eff6ff;
+    border-color: #bfdbfe;
+}
+.price-input.auto input { background: transparent; color: #1d4ed8; font-weight: 600; }
+.fare-note {
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 5px;
+    line-height: 1.4;
+}
+.fare-note:empty { display: none; }
+.fare-note a { color: #2563eb; text-decoration: none; }
+.fare-note a:hover { text-decoration: underline; }
+.fare-note .approx { color: #92400e; font-weight: 600; }
+.fare-note .muted { color: #9ca3af; }
+.tag.country { background: #ede9fe; color: #5b21b6; }
+.total .countries { color: #5b21b6; font-weight: 600; }
+.live-status:empty { display: none; }
+.spinner {
+    display: inline-block;
+    width: 10px; height: 10px;
+    margin-right: 6px;
+    vertical-align: -1px;
+    border: 2px solid #bfdbfe;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

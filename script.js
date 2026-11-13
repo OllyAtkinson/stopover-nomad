@@ -7,6 +7,10 @@
 // data shows both legs exist, then gives the user prefilled search links
 // for each ticket so they can check the prices and see the saving.
 //
+// Prices: if the /api/prices backend is deployed with a Travelpayouts token,
+// every leg's price is filled in automatically from recently seen fares, and
+// splits are sorted by real total. Without it, users type prices in.
+//
 // Data: AIRPORTS (airports.js, OurAirports) and ROUTES / AIRLINE_NAMES
 // (routes.js, an OpenFlights snapshot — around 2014, so it's used to
 // find candidate stopovers, not as a live timetable).
@@ -19,6 +23,8 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => (
 // OurAirports city names can be long ("Paris (Roissy-en-France, Val-d'Oise)") — keep the first part.
 const placeName = a => (a.city ? a.city.replace(/\s*\(.*$/, "").split(",")[0].trim() : "") || a.name;
 const CURRENCY = "£";
+// "AE" → 🇦🇪 (regional indicator letters)
+const flag = cc => /^[A-Z]{2}$/.test(cc || "") ? String.fromCodePoint(...[...cc].map(c => 0x1F1A5 + c.charCodeAt(0))) : "";
 
 // ---- Map setup -------------------------------------------------
 const WORLD_BOUNDS = L.latLngBounds([-85, -180], [85, 180]);
@@ -559,12 +565,97 @@ function searchLinks(from, to, date) {
 
 // ---- Prices the user types in -------------------------------------------------
 // Keyed by "FROM-TO-DATE" so the same leg shares a price across cards.
-const prices = new Map();
+const prices = new Map();      // key → number used in totals (typed or auto)
+const typedKeys = new Set();    // keys the user typed themselves; auto prices never overwrite these
+const autoFares = new Map();    // key → fare from /api/prices, or null if none found
 const priceKey = (from, to, date) => `${from}-${to}-${date}`;
 
 function priceBox(key) {
     const v = prices.has(key) ? prices.get(key) : "";
-    return `<label class="price-input"><span>${CURRENCY}</span><input type="number" min="0" step="1" inputmode="decimal" placeholder="price" data-price-key="${esc(key)}" value="${v}"></label>`;
+    const auto = autoFares.get(key) && !typedKeys.has(key) ? " auto" : "";
+    return `<label class="price-input${auto}"><span>${CURRENCY}</span><input type="number" min="0" step="1" inputmode="decimal" placeholder="price" data-price-key="${esc(key)}" value="${v}"></label>`;
+}
+// A line under each price box saying where an auto price came from.
+const fareNote = key => `<div class="fare-note" data-note-key="${esc(key)}">${fareNoteHtml(key)}</div>`;
+
+// ---- Automatic prices (/api/prices) -------------------------------------------------
+// Point the app at an API on another host with: <script>window.PRICE_API_URL = "https://…/api/prices"</script>
+const PRICE_API = window.PRICE_API_URL || "api/prices";
+let liveState = "unknown";      // "unknown" | "off" (no backend / no token) | "on" | "error"
+let searchSeq = 0;              // ignores responses from a search the user has since replaced
+const MANUAL_NOTE = `"Best guess" puts budget airlines, airline changes and big hubs first. Add leg prices, then sort by cheapest total.`;
+
+function fareNoteHtml(key) {
+    if (!autoFares.has(key) || typedKeys.has(key)) return "";
+    const f = autoFares.get(key);
+    if (!f) return `<span class="muted">No recent fare seen for this leg — check the links.</span>`;
+    const bits = [];
+    if (!f.exactDate) bits.push(`<span class="approx">nearest fare is ${prettyDate(f.date)}</span>`);
+    if (f.airline) bits.push(esc(AIRLINE_NAMES[f.airline] || f.airline));
+    if (f.transfers != null) bits.push(f.transfers === 0 ? "nonstop" : `${f.transfers} change${f.transfers > 1 ? "s" : ""}`);
+    const link = f.link ? ` · <a href="${esc(f.link)}" target="_blank" rel="noopener">Book on Aviasales ↗</a>` : "";
+    return `Recent fare${bits.length ? " · " + bits.join(" · ") : ""}${link}`;
+}
+
+function applyAutoFare(key) {
+    const f = autoFares.get(key);
+    if (typedKeys.has(key)) return;
+    if (f) prices.set(key, f.price); else prices.delete(key);
+    resultsPanel.querySelectorAll(`[data-price-key="${CSS.escape(key)}"]`).forEach(inp => {
+        inp.value = f ? f.price : "";
+        inp.closest(".price-input").classList.toggle("auto", !!f);
+    });
+    resultsPanel.querySelectorAll(`[data-note-key="${CSS.escape(key)}"]`).forEach(el => { el.innerHTML = fareNoteHtml(key); });
+}
+
+function setLiveStatus(html) {
+    const el = resultsPanel.querySelector(".live-status");
+    if (el) el.innerHTML = html;
+}
+
+async function fetchFares(seq) {
+    if (liveState === "off") return;
+    const allKeys = [...new Set([...resultsPanel.querySelectorAll("[data-price-key]")].map(i => i.dataset.priceKey))];
+    const keys = allKeys.filter(k => !autoFares.has(k));
+    const doneMsg = () => {
+        const found = allKeys.filter(k => autoFares.get(k)).length;
+        setLiveStatus(`Prices filled in for ${found} of ${allKeys.length} flights from fares seen in the last few days. ` +
+            `They're a guide, not a quote: confirm before booking.`);
+    };
+    if (!keys.length) { if (liveState === "on") doneMsg(); return; }
+    setLiveStatus(`<span class="spinner"></span>Looking up prices for ${keys.length} flight${keys.length > 1 ? "s" : ""}…`);
+    const legs = keys.map(k => ({ from: k.slice(0, 3), to: k.slice(4, 7), date: k.slice(8) }));
+    let body;
+    try {
+        const r = await fetch(PRICE_API, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ legs }),
+        });
+        body = r.headers.get("content-type")?.includes("json") ? await r.json() : null;
+        if (!body) throw Object.assign(new Error("no API"), { off: true });   // e.g. static hosting, 404 page
+        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    } catch (e) {
+        if (seq !== searchSeq) return;
+        if (e.off || e instanceof TypeError) {
+            liveState = "off";
+            setLiveStatus(MANUAL_NOTE);
+        } else {
+            liveState = "error";
+            setLiveStatus(`Couldn't load prices (${esc(e.message)}). ${MANUAL_NOTE}`);
+        }
+        return;
+    }
+    if (body.configured === false) { liveState = "off"; if (seq === searchSeq) setLiveStatus(MANUAL_NOTE); return; }
+    liveState = "on";
+    for (const r of body.results || []) autoFares.set(priceKey(r.from, r.to, r.date), r.fare || null);
+    if (seq !== searchSeq) return;   // fares are cached above; the user has moved on
+
+    keys.forEach(applyAutoFare);
+    doneMsg();
+    if (!userPickedSort) sortMode = "price";
+    updateTotals();
+    applySort();
 }
 
 const money = n => CURRENCY + Math.round(n).toLocaleString("en-GB");
@@ -580,8 +671,12 @@ function updateTotals() {
         const el = card.querySelector(".total");
         const n = keys.length;
         const word = n === 2 ? "Two" : n === 3 ? "Three" : n === 4 ? "Four" : String(n);
+        const nc = +card.dataset.countries || 0;
+        const extra = nc ? ` · <span class="countries">+${nc} countr${nc > 1 ? "ies" : "y"}</span>` : "";
         if (vals.some(v => v === undefined)) {
-            el.innerHTML = `Add all ${n} ticket prices to see the total.`;
+            const missing = vals.filter(v => v === undefined).length;
+            el.innerHTML = (missing === n ? `Add all ${n} ticket prices to see the total.`
+                : `${missing} of ${n} prices missing — type ${missing > 1 ? "them" : "it"} in to see the total.`) + extra;
             card._total = null;
             return;
         }
@@ -589,13 +684,13 @@ function updateTotals() {
         card._total = total;
         const lead = `${word} tickets: <strong>${money(total)}</strong>`;
         if (beat === undefined) {
-            el.innerHTML = `${lead} · add the one-ticket price above to compare.`;
+            el.innerHTML = `${lead} · add the one-ticket price above to compare${extra}`;
         } else if (total < beat) {
-            el.innerHTML = `${lead} · <span class="save">${money(beat - total)} cheaper</span> than one ticket`;
+            el.innerHTML = `${lead} · <span class="save">${money(beat - total)} cheaper</span> than one ticket${extra}`;
         } else if (total > beat) {
-            el.innerHTML = `${lead} · <span class="lose">${money(total - beat)} dearer</span> than one ticket`;
+            el.innerHTML = `${lead} · <span class="lose">${money(total - beat)} dearer</span> than one ticket${extra}`;
         } else {
-            el.innerHTML = `${lead} · same as one ticket`;
+            el.innerHTML = `${lead} · same as one ticket${extra}`;
         }
         if (cheapest === null || total < cheapest._total) cheapest = card;
     });
@@ -608,6 +703,7 @@ function updateTotals() {
 
 // "best" = the route-data guess order; "price" = cheapest entered total first.
 let sortMode = "best";
+let userPickedSort = false;   // once they choose, auto prices stop switching it for them
 
 function applySort() {
     const list = resultsPanel.querySelector(".option-list");
@@ -631,13 +727,21 @@ resultsPanel.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-sort]");
     if (!btn) return;
     sortMode = btn.dataset.sort;
+    userPickedSort = true;
     applySort();
 });
 
 // Re-sort once a price is committed (blur / Enter), not on every keystroke,
 // so the card you're typing in doesn't jump around.
 resultsPanel.addEventListener("change", (e) => {
-    if (e.target.dataset && e.target.dataset.priceKey && sortMode === "price") applySort();
+    const key = e.target.dataset && e.target.dataset.priceKey;
+    if (!key) return;
+    if (e.target.value === "" && autoFares.get(key)) {   // cleared → go back to the looked-up price
+        typedKeys.delete(key);
+        applyAutoFare(key);
+        updateTotals();
+    }
+    if (sortMode === "price") applySort();
 });
 
 resultsPanel.addEventListener("input", (e) => {
@@ -645,10 +749,13 @@ resultsPanel.addEventListener("input", (e) => {
     if (!key) return;
     const n = parseFloat(e.target.value);
     if (Number.isFinite(n) && n >= 0) prices.set(key, n); else prices.delete(key);
+    typedKeys.add(key);
     // keep any other box for the same leg in sync
     resultsPanel.querySelectorAll(`[data-price-key="${CSS.escape(key)}"]`).forEach(inp => {
         if (inp !== e.target) inp.value = e.target.value;
+        inp.closest(".price-input").classList.remove("auto");
     });
+    resultsPanel.querySelectorAll(`[data-note-key="${CSS.escape(key)}"]`).forEach(el => { el.innerHTML = ""; });
     updateTotals();
 });
 
@@ -681,8 +788,9 @@ function renderResults(a, b) {
             <div class="beat-sub">${nonstop
                 ? `Nonstop listed in the route data (${esc(airlineLabel(nonstop.airlines))}) · ~${flightTimeStr(direct)}. Airlines may have changed since.`
                 : `No nonstop in the route data, so the cheapest one-ticket option will have a connection.`}
-                Find the cheapest fare and type it in.</div>
+                ${liveState === "off" || liveState === "error" ? "Find the cheapest fare and type it in." : ""}</div>
             <div class="price-row">${priceBox(beatKey)}${searchLinks(a.iata, b.iata, date1)}</div>
+            ${fareNote(beatKey)}
         </div>
     `;
 
@@ -695,7 +803,7 @@ function renderResults(a, b) {
                 <button type="button" data-sort="best">Best guess</button>
                 <button type="button" data-sort="price">Cheapest total</button>
             </div>
-            <p class="sort-note">No live prices yet, so "Best guess" puts budget airlines, airline changes and big hubs first. Add leg prices, then sort by cheapest total.</p>
+            <p class="sort-note live-status">${liveState === "off" || liveState === "error" ? MANUAL_NOTE : ""}</p>
             <div class="option-list">`;
 
         splits.forEach((s, i) => {
@@ -705,7 +813,11 @@ function renderResults(a, b) {
                 return { from, to, edge: s.edges[j], date, key: priceKey(from.iata, to.iata, date) };
             });
             const extraPct = Math.round((s.ratio - 1) * 100);
+            // New countries this route adds on top of where you start and end.
+            const homeCountries = new Set([a.country, b.country, s.o.country, s.d.country]);
+            const newCountries = [...new Set(s.hubs.map(h => h.country).filter(c => c && !homeCountries.has(c)))];
             const tags = [];
+            if (newCountries.length) tags.push(`<span class="tag country">${newCountries.map(flag).join(" ")} +${newCountries.length} countr${newCountries.length > 1 ? "ies" : "y"}</span>`);
             if (s.estimate) tags.push(`<span class="tag warn">Unconfirmed</span>`);
             if (s.budgetLegs > 0) tags.push(`<span class="tag good">Budget airline${s.budgetLegs > 1 ? `s on ${s.budgetLegs} legs` : ""}</span>`);
             if (s.airlineChanges > 0) tags.push(`<span class="tag">${s.airlineChanges === stops ? "Different airlines" : "Airline change"}</span>`);
@@ -724,6 +836,7 @@ function renderResults(a, b) {
                     </div>
                     <div class="leg-air">${l.edge ? esc(airlineLabel(l.edge.airlines)) : "Not in route data — check it exists"}</div>
                     <div class="price-row">${priceBox(l.key)}${searchLinks(l.from.iata, l.to.iata, l.date)}</div>
+                    ${fareNote(l.key)}
                 </div>`;
 
             const title = stops === 1
@@ -733,7 +846,7 @@ function renderResults(a, b) {
                 `<div class="option-places">${s.hubs.map(h => esc(placeName(h))).join(" → ")}</div>`;
 
             html += `
-                <div class="option${i === 0 ? " selected" : ""}" data-idx="${i}" data-keys="${esc(legs.map(l => l.key).join("|"))}">
+                <div class="option${i === 0 ? " selected" : ""}" data-idx="${i}" data-countries="${newCountries.length}" data-keys="${esc(legs.map(l => l.key).join("|"))}">
                     <div class="option-top">
                         <span class="option-title">${title}</span>
                         <span class="option-dist">${extraPct <= 0 ? "no detour" : `+${extraPct}% distance`}</span>
@@ -794,7 +907,9 @@ function renderResults(a, b) {
 
     drawSplit(0);
     updateTotals();
+    if (liveState === "on" && !userPickedSort) sortMode = "price";
     applySort();
+    fetchFares(++searchSeq);
 }
 
 // ---- Search button -------------------------------------------------
