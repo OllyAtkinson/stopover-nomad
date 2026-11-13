@@ -576,41 +576,100 @@ button:hover {
 }
 
 /* Sort toggle */
-.sort-bar {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 6px;
-    font-size: 12px;
-    color: #6b7280;
-}
 
-.sort-bar span {
-    margin-right: 2px;
-}
 
-.sort-bar button {
-    width: auto;
-    padding: 5px 10px;
-    font-size: 12px;
-    font-weight: 600;
-    border-radius: 999px;
-    background: #f3f4f6;
-    color: #374151;
-}
 
-.sort-bar button:hover {
-    background: #e5e7eb;
-}
 
-.sort-bar button.active {
-    background: #2563eb;
-    color: white;
-}
 
 .sort-note {
     font-size: 11.5px;
     color: #9ca3af;
     line-height: 1.4;
     margin-bottom: 10px;
+}
+
+/* ---- Automatic prices ---- */
+.price-input.auto {
+    background: #eff6ff;
+    border-color: #bfdbfe;
+}
+.price-input.auto input { background: transparent; color: #1d4ed8; font-weight: 600; }
+.fare-note {
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 5px;
+    line-height: 1.4;
+}
+.fare-note:empty { display: none; }
+.fare-note a { color: #2563eb; text-decoration: none; }
+.fare-note a:hover { text-decoration: underline; }
+.fare-note .approx { color: #92400e; font-weight: 600; }
+.fare-note .muted { color: #9ca3af; }
+.tag.country { background: #ede9fe; color: #5b21b6; display: inline-flex; align-items: center; gap: 3px; }
+.total .countries { color: #5b21b6; font-weight: 600; }
+.live-status:empty { display: none; }
+.spinner {
+    display: inline-block;
+    width: 10px; height: 10px;
+    margin-right: 6px;
+    vertical-align: -1px;
+    border: 2px solid #bfdbfe;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.multi-link {
+    display: block;
+    margin-top: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #2563eb;
+    text-decoration: none;
+}
+.multi-link:hover { text-decoration: underline; }
+
+/* ---- Flags ---- */
+img.flag {
+    display: inline-block;
+    width: 16px;
+    height: 12px;
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .08);
+    vertical-align: -1px;
+    object-fit: cover;
+}
+.tag img.flag { width: 14px; height: 10.5px; }
+
+/* ---- Rank slider ---- */
+.rank-bar {
+    margin-bottom: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #f9fafb;
+    border: 1px solid #f3f4f6;
+}
+.rank-head {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #6b7280;
+}
+.rank-head strong { color: #111827; }
+.rank-bar .rank-slider {
+    width: 100%;
+    margin: 8px 0 4px;
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    background: none;
+    accent-color: #2563eb;
+    cursor: pointer;
+}
+.rank-bar .rank-slider:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+.rank-ends {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #9ca3af;
 }
