@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stopover Nomad</title>
+<meta name="description" content="Find split-ticket routes — two separate flights via a stopover — that can be cheaper than one ticket." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<!-- Leaflet is bundled locally so the map doesn't depend on a CDN being reachable -->
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css"/>
+<link rel="stylesheet" href="style.css"/>
+</head>
+
+<body>
+
+<div class="sidebar">
+    <h1>Stopover Nomad</h1>
+    <p class="tagline">Two separate tickets via a stopover can beat one through-ticket. Find the split, check both prices, see the saving.</p>
+
+    <div class="search">
+        <div class="field">
+            <label for="from-input">From</label>
+            <input id="from-input" type="text" placeholder="City or airport, e.g. London" autocomplete="off">
+            <ul id="from-suggestions" class="suggestions"></ul>
+        </div>
+        <div class="field">
+            <label for="to-input">To</label>
+            <input id="to-input" type="text" placeholder="City or airport, e.g. Bangkok" autocomplete="off">
+            <ul id="to-suggestions" class="suggestions"></ul>
+        </div>
+        <div class="field">
+            <label for="date-input">Depart</label>
+            <input id="date-input" type="date">
+        </div>
+        <div class="row">
+            <div class="field">
+                <label for="stops-input">Stops</label>
+                <select id="stops-input">
+                    <option value="1">1 stop · 2 tickets</option>
+                    <option value="2">2 stops · 3 tickets</option>
+                    <option value="3">3 stops · 4 tickets</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="nights-input">Nights per stop</label>
+                <select id="nights-input">
+                    <option value="0">Same day</option>
+                    <option value="1">1 night</option>
+                    <option value="2">2 nights</option>
+                    <option value="3">3 nights</option>
+                    <option value="5">5 nights</option>
+                    <option value="7">7 nights</option>
+                </select>
+            </div>
+        </div>
+        <label class="check">
+            <input id="nearby-input" type="checkbox" checked>
+            Include nearby airports (within 100 km)
+        </label>
+        <button id="search-btn">Find split tickets</button>
+    </div>
+
+    <div id="results" class="results"></div>
+
+    <div class="legend">
+        <div class="legend-title">Airport connectivity</div>
+        <div class="legend-row"><span class="legend-dot" style="background:#22c55e"></span>Major hub (15+ routes)</div>
+        <div class="legend-row"><span class="legend-dot" style="background:#f59e0b"></span>Moderate (5–14 routes)</div>
+        <div class="legend-row"><span class="legend-dot" style="background:#ef4444"></span>Limited (1–4 routes)</div>
+        <div class="legend-row"><span class="legend-dot" style="background:#cbd5e1"></span>No route data</div>
+    </div>
+
+    <p class="hint" id="status-hint">Loading airport data…</p>
+</div>
+
+<div id="map"></div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="airports.js"></script>
+<script src="routes.js"></script>
+<script src="script.js"></script>
+
+</body>
+</html>
