@@ -20,6 +20,13 @@
     <h1>Stopover Nomad</h1>
     <p class="tagline">Say how long you have to get there. We'll fit in stopovers that make the trip cheaper than flying direct, and add more countries on the way.</p>
 
+    <div class="presets" role="group" aria-label="Quick settings">
+        <span>Quick start</span>
+        <button type="button" data-preset="cheapest" title="Up to 2 days, quick connections, cheapest first">💷 Cheapest</button>
+        <button type="button" data-preset="balanced" title="Up to 5 days, a night at each stop, balanced">⚖️ Balanced</button>
+        <button type="button" data-preset="explorer" title="Up to 10 days, 2+ nights at each stop, most countries first">🌍 Explorer</button>
+    </div>
+
     <div class="search">
         <div class="field">
             <label for="from-input">From</label>
@@ -71,7 +78,22 @@
             <input id="nearby-input" type="checkbox" checked>
             Include nearby airports (within 100 km)
         </label>
-        <button id="search-btn">Find routes</button>
+        <label class="check">
+            <input id="costs-input" type="checkbox" checked>
+            Add hotel costs at each stop (rough guide)
+        </label>
+        <label class="check">
+            <input id="bags-input" type="checkbox">
+            I'm taking a hold bag (adds budget-airline bag fees)
+        </label>
+        <details class="visited">
+            <summary>Countries you've been to <span id="visited-count"></span></summary>
+            <p class="hint">Routes through countries you haven't visited rank higher. Saved in this browser only.</p>
+            <input id="visited-input" type="text" list="visited-options" placeholder="Add a country, e.g. France" autocomplete="off">
+            <datalist id="visited-options"></datalist>
+            <div id="visited-list" class="chips"></div>
+        </details>
+        <button id="search-btn" type="button">Find routes</button>
     </div>
 
     <div id="results" class="results"></div>
@@ -92,6 +114,8 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <script src="airports.js"></script>
 <script src="routes.js"></script>
+<script src="places.js"></script>
+<script src="planner.js"></script>
 <script src="script.js"></script>
 
 </body>

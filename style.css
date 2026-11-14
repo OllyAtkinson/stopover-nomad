@@ -691,3 +691,45 @@ img.flag {
     font-weight: 600;
 }
 .option.direct { border-style: dashed; }
+
+/* ---- Presets ---- */
+.presets {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 14px;
+    font-size: 12px;
+    color: #6b7280;
+}
+.presets span { margin-right: 2px; }
+.presets button, .chip, .share-btn, .link-like {
+    width: auto;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 999px;
+    background: #f3f4f6;
+    color: #374151;
+}
+.presets button:hover, .chip:hover, .share-btn:hover { background: #e5e7eb; }
+.presets button.active { background: #2563eb; color: white; }
+
+/* ---- Countries visited ---- */
+.visited { margin: 4px 0 12px; font-size: 13px; color: #374151; }
+.visited summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+.visited summary span { color: #6b7280; font-weight: 400; }
+.visited .hint { margin: 4px 0 8px; }
+.visited input { width: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; font-weight: 500; }
+
+/* ---- Results extras ---- */
+.result-route { display: flex; align-items: center; gap: 8px; }
+.share-btn { margin-left: auto; font-size: 11.5px; }
+.option[hidden] { display: none; }
+.option.no-fares { opacity: .6; }
+.tag.great { background: #fef9c3; color: #854d0e; }
+.stay-cost { font-weight: 400; color: #7c3aed; margin-left: 4px; }
+.hidden-routes:empty { display: none; }
+.hidden-routes .link-like { margin-right: 4px; }
