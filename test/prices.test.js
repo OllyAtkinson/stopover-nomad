@@ -62,3 +62,24 @@ test("lookupWindows rejects bad input and bad tokens", async () => {
     const denied = async () => ({ ok: false, status: 401, json: async () => ({}) });
     await assert.rejects(lookupWindows([{ from: "LHR", to: "AUH", start: "2026-12-14", end: "2026-12-14" }], { token: "t", fetchImpl: denied }), /token/);
 });
+
+test("explore returns the cheapest destination per city in the window, both ways", async () => {
+    const { explore } = require("../lib/prices.js");
+    _cache.clear();
+    const calls = [];
+    const fetchImpl = async (url) => {
+        calls.push(url);
+        const u = new URL(url);
+        const o = u.searchParams.get("origin"), d = u.searchParams.get("destination");
+        const data = o === "LON" && !d ? [
+            { destination: "AUH", price: 210, departure_at: "2026-12-14T09:00:00Z" },
+            { destination: "AUH", price: 190, departure_at: "2026-12-15T09:00:00Z" },
+            { destination: "IST", price: 60, departure_at: "2026-12-30T09:00:00Z" },   // outside window
+        ] : d === "HAN" && !o ? [{ origin: "SIN", price: 70, departure_at: "2026-12-16T09:00:00Z" }] : [];
+        return { ok: true, status: 200, json: async () => ({ success: true, data }) };
+    };
+    const r = await explore({ from: "LON", to: "HAN", start: "2026-12-10", end: "2026-12-20" }, { token: "t", fetchImpl });
+    assert.deepStrictEqual(r.outbound, [{ code: "AUH", price: 190, date: "2026-12-15" }]);
+    assert.deepStrictEqual(r.inbound, [{ code: "SIN", price: 70, date: "2026-12-16" }]);
+    assert.ok(calls.every(u => new URL(u).searchParams.get("unique") === "true"));
+});

@@ -3,10 +3,14 @@
 //     results: [{ from, to, start, end, days: { "2026-12-15": { price, airline, transfers, link, … } } }] }
 // Days with no recently seen fare are simply missing from `days`.
 //
+// POST /api/prices  { explore: { from: "LON", to: "HAN", start: "2026-12-10", end: "2026-12-20" } }
+// → { configured: true, explore: { outbound: [{ code, price, date }], inbound: [...] } }
+// The cheapest places to fly to from `from` and into `to`: stopover candidates.
+//
 // Runs as a Vercel serverless function (also used by dev-server.js).
 // Needs TRAVELPAYOUTS_TOKEN set; without it the endpoint says
 // { configured: false } and the app stays in manual-price mode.
-const { lookupWindows } = require("../lib/prices.js");
+const { lookupWindows, explore } = require("../lib/prices.js");
 
 function readBody(req) {
     if (req.body !== undefined) {
@@ -42,6 +46,10 @@ module.exports = async function handler(req, res) {
     try { body = await readBody(req); } catch { return send(res, 400, { error: "invalid JSON" }); }
 
     try {
+        if (body.explore) {
+            const result = await explore(body.explore, { token, currency: "gbp" });
+            return send(res, 200, { configured: true, currency: "GBP", explore: result });
+        }
         const results = await lookupWindows(body.windows, {
             token,
             marker: process.env.TRAVELPAYOUTS_MARKER || "",
