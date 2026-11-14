@@ -1,15 +1,16 @@
 // =========================================================
-// Stopover Nomad — split-ticket finder
+// Stopover Nomad — fit stopovers into a trip
 //
-// Idea: one through-ticket A → B is often dearer than two separate
-// one-way tickets A → C and C → B (especially when budget airlines
-// fly one of the legs). This finds stopover airports C where the route
-// data shows both legs exist, then gives the user prefilled search links
-// for each ticket so they can check the prices and see the saving.
+// Idea: you have N days to get from A to B. Flying via one, two or three
+// stopovers on separate tickets is often cheaper than one direct ticket, and
+// you get to visit more places on the way. This finds stopover routes in the
+// route data, fits the stays into your time budget, and ranks every option
+// (direct included) from cheapest to most new countries.
 //
 // Prices: if the /api/prices backend is deployed with a Travelpayouts token,
-// every leg's price is filled in automatically from recently seen fares, and
-// splits are sorted by real total. Without it, users type prices in.
+// fares for every flight across the possible dates are looked up and the
+// cheapest dates that fit the budget are picked. Without it, users type
+// prices in from the prefilled search links.
 //
 // Data: AIRPORTS (airports.js, OurAirports) and ROUTES / AIRLINE_NAMES
 // (routes.js, an OpenFlights snapshot — around 2014, so it's used to
@@ -20,8 +21,13 @@
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
 ));
-// OurAirports city names can be long ("Paris (Roissy-en-France, Val-d'Oise)") — keep the first part.
-const placeName = a => (a.city ? a.city.replace(/\s*\(.*$/, "").split(",")[0].trim() : "") || a.name;
+// City name: from places.js (Travelpayouts' city for the airport, e.g. Milan for Malpensa,
+// not "Ferno"), else OurAirports' town, which can be long ("Paris (Roissy-en-France, …)").
+const PLACE_DATA = typeof PLACES === "object" ? PLACES : {};
+const placeName = a => (PLACE_DATA[a.iata] && PLACE_DATA[a.iata][1]) ||
+    (a.city ? a.city.replace(/\s*\(.*$/, "").split(",")[0].trim() : "") || a.name;
+// City code used for prices, so London covers LHR, LGW, STN, LTN, LCY and SEN.
+const metro = a => (PLACE_DATA[a.iata] && PLACE_DATA[a.iata][0]) || a.iata;
 const CURRENCY = "£";
 // Flag image (bundled flag-icons SVGs, so Windows shows real flags too, not "IN").
 // alt is empty where the country name is written next to it.
@@ -32,7 +38,11 @@ const flag = (cc, alt = "") => /^[A-Z]{2}$/.test(cc || "")
 const REGION_NAMES = (() => { try { return new Intl.DisplayNames(["en-GB"], { type: "region" }); } catch { return null; } })();
 const countryName = cc => { try { return (REGION_NAMES && cc && REGION_NAMES.of(cc)) || cc || ""; } catch { return cc || ""; } };
 // "Delhi, India [flag]" (HTML)
-const placeLabel = a => esc([placeName(a), countryName(a.country)].filter(Boolean).join(", ")) + (flag(a.country) ? " " + flag(a.country) : "");
+const placeLabel = a => {
+    const city = placeName(a), country = countryName(a.country);
+    const text = !country || country === city ? city : `${city}, ${country}`;   // "Singapore", not "Singapore, Singapore"
+    return esc(text) + (flag(a.country) ? " " + flag(a.country, country) : "");
+};
 
 // ---- Map setup -------------------------------------------------
 const WORLD_BOUNDS = L.latLngBounds([-85, -180], [85, 180]);
@@ -47,32 +57,49 @@ const map = L.map("map", {
 }).setView([20, 10], 2);
 
 map.attributionControl.setPrefix(false);
-// Basemap: Esri Light Gray (no API key needed — CARTO's free tiles now show an
-// "API KEY REQUIRED" watermark). Labels come from a separate reference layer.
-// If Esri tiles fail repeatedly, fall back to standard OpenStreetMap tiles.
-const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
-const baseLayer = L.tileLayer(ESRI + "World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 16,
-    noWrap: true,
-    attribution: 'Tiles &copy; <a href="https://www.esri.com">Esri</a> — Esri, HERE, Garmin, &copy; OpenStreetMap contributors'
-}).addTo(map);
+
+// Basemaps: Esri tiles need no API key. Satellite (default) with country and city labels on
+// top, or a clean light map. Attribution is required by the licence; it's kept, but shrunk to
+// one quiet line that expands on hover (see .leaflet-control-attribution in style.css).
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
 map.createPane("labels");                       // above the basemap, below dots and routes
 map.getPane("labels").style.zIndex = 350;
 map.getPane("labels").style.pointerEvents = "none";
-const labelLayer = L.tileLayer(ESRI + "World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 16,
-    noWrap: true,
-    pane: "labels"
-}).addTo(map);
+const BASEMAPS = {
+    Satellite: L.layerGroup([
+        L.tileLayer(ESRI + "World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+            maxZoom: 17, noWrap: true, className: "tiles-satellite",
+            attribution: "Imagery &copy; Esri, Maxar, Earthstar Geographics",
+        }),
+        L.tileLayer("https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
+            maxZoom: 17, noWrap: true, pane: "labels", attribution: "Labels &copy; Esri",
+        }),
+    ]),
+    Light: L.layerGroup([
+        L.tileLayer(ESRI + "Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+            maxZoom: 16, noWrap: true, attribution: "&copy; Esri, HERE, Garmin, OpenStreetMap contributors",
+        }),
+        L.tileLayer(ESRI + "Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}", { maxZoom: 16, noWrap: true, pane: "labels" }),
+    ]),
+};
+let basemapName = "Satellite";
+try { if (BASEMAPS[localStorage.getItem("basemap")]) basemapName = localStorage.getItem("basemap"); } catch { /* storage blocked */ }
+BASEMAPS[basemapName].addTo(map);
+document.getElementById("map").classList.toggle("dark-map", basemapName === "Satellite");
+L.control.layers(BASEMAPS, null, { position: "topright" }).addTo(map);
+map.on("baselayerchange", e => {
+    document.getElementById("map").classList.toggle("dark-map", e.name === "Satellite");
+    try { localStorage.setItem("basemap", e.name); } catch { /* storage blocked */ }
+});
 
+// If tiles keep failing (e.g. Esri unreachable), fall back to OpenStreetMap.
 let tileErrors = 0;
-baseLayer.on("tileerror", () => {
-    if (++tileErrors !== 6) return;
-    map.removeLayer(baseLayer);
-    map.removeLayer(labelLayer);
+map.on("tileerror", () => {
+    if (++tileErrors !== 8) return;
+    Object.values(BASEMAPS).forEach(l => map.removeLayer(l));
+    document.getElementById("map").classList.remove("dark-map");
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        noWrap: true,
+        maxZoom: 19, noWrap: true,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }).addTo(map);
 });
@@ -85,9 +112,9 @@ const byIata = new Map();
 AIRPORTS.forEach(a => {
     byIata.set(a.iata, a);
     a._iata = a.iata.toLowerCase();
-    a._city = (a.city || "").toLowerCase();
+    a._city = placeName(a).toLowerCase();
     a._name = a.name.toLowerCase();
-    a._search = `${a.iata} ${a.icao} ${a.name} ${a.city} ${a.country} ${countryName(a.country)}`.toLowerCase();
+    a._search = `${a.iata} ${a.icao} ${a.name} ${a.city} ${placeName(a)} ${a.country} ${countryName(a.country)}`.toLowerCase();
 });
 
 function connectionCount(iata) {
@@ -96,32 +123,19 @@ function connectionCount(iata) {
 }
 
 // ---- Render every airport as a canvas dot, coloured by connectivity ------------------------
-const sizeByType = {
-    large_airport:  { radius: 4.2, weight: 1 },
-    medium_airport: { radius: 2.8, weight: 0 },
-    small_airport:  { radius: 1.8, weight: 0 }
-};
-
-function connectivityColor(count) {
-    if (count === 0) return { color: "#cbd5e1", fillOpacity: 0.5 };
-    if (count < 5)   return { color: "#ef4444", fillOpacity: 0.75 };
-    if (count < 15)  return { color: "#f59e0b", fillOpacity: 0.8 };
-    return               { color: "#22c55e", fillOpacity: 0.85 };
-}
 
 const airportLayer = L.layerGroup().addTo(map);
 
+// Airports with routes, as small soft dots: bigger for bigger hubs. Click one to use it.
 AIRPORTS.forEach(a => {
-    const size = sizeByType[a.type] || sizeByType.small_airport;
     const conns = connectionCount(a.iata);
-    const c = connectivityColor(conns);
+    if (!conns) return;
     const m = L.circleMarker([a.lat, a.lon], {
-        radius: size.radius,
-        color: c.color,
-        fillColor: c.color,
-        fillOpacity: c.fillOpacity,
-        weight: size.weight,
-        opacity: 0.9
+        radius: conns >= 60 ? 3.2 : conns >= 15 ? 2.2 : 1.5,
+        stroke: false,
+        fillColor: "#e0f2fe",
+        fillOpacity: conns >= 15 ? 0.65 : 0.35,
+        className: "airport-dot",
     });
 
     const connLabel = conns > 0 ? `${conns} nonstop route${conns === 1 ? "" : "s"}` : "no route data";
@@ -159,7 +173,8 @@ const toInput = document.getElementById("to-input");
 const fromList = document.getElementById("from-suggestions");
 const toList = document.getElementById("to-suggestions");
 const dateInput = document.getElementById("date-input");
-const nightsInput = document.getElementById("nights-input");
+const daysInput = document.getElementById("days-input");
+const minStayInput = document.getElementById("minstay-input");
 const stopsInput = document.getElementById("stops-input");
 const nearbyInput = document.getElementById("nearby-input");
 const searchBtn = document.getElementById("search-btn");
@@ -350,27 +365,58 @@ function clearRoute() {
     endpointMarkers.clearLayers();
 }
 
-function drawLeg(a, b, color = "#2563eb") {
+// Each flight gets its own colour, with a soft glow and a moving dashed "flight path".
+const LEG_COLOURS = ["#ff4d8d", "#ffb020", "#2ee6c5", "#8b7bff", "#4fc3ff"];
+const routeRenderer = L.svg({ padding: 0.5 });   // SVG so the dashes can animate (dots stay on canvas)
+
+function drawLeg(a, b, i = 0, faint = false) {
+    const color = LEG_COLOURS[i % LEG_COLOURS.length];
     const segs = splitAtAntimeridian(greatCirclePoints(a, b));
-    L.polyline(segs, { color, weight: 10, opacity: 0.08, interactive: false }).addTo(routeLayers);
-    L.polyline(segs, { color, weight: 4, opacity: 0.9, lineJoin: "round", interactive: false }).addTo(routeLayers);
+    const base = { renderer: routeRenderer, interactive: false, lineCap: "round", lineJoin: "round" };
+    if (faint) {
+        L.polyline(segs, { ...base, color: "#ffffff", weight: 1.5, opacity: 0.35, dashArray: "2 6" }).addTo(routeLayers);
+        return segs.flat();
+    }
+    L.polyline(segs, { ...base, color, weight: 14, opacity: 0.18 }).addTo(routeLayers);
+    L.polyline(segs, { ...base, color, weight: 4, opacity: 0.95 }).addTo(routeLayers);
+    L.polyline(segs, { ...base, color: "#ffffff", weight: 2, opacity: 0.9, dashArray: "1 14", className: "flight-flow" }).addTo(routeLayers);
     return segs.flat();
 }
 
-function markPoint(a, label, cls = "") {
+// A pin with a label: kind = "from" | "to" | "stop"; note e.g. "2 nights".
+function markPoint(a, kind, num, note = "") {
+    const badge = kind === "stop" ? `<span class="pin-num">${num}</span>` : `<span class="pin-dot"></span>`;
+    const label = `${flag(a.country)}<b>${esc(placeName(a))}</b>${note ? `<i>${esc(note)}</i>` : ""}`;
     const icon = L.divIcon({
-        className: "custom-marker",
-        html: `<div class="dot ${cls}"></div>`,
-        iconSize: [14, 14],
-        iconAnchor: [7, 7]
+        className: `map-pin pin-${kind}`,
+        html: `${badge}<span class="pin-label">${label}</span>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
     });
-    L.marker([a.lat, a.lon], { icon, zIndexOffset: 1000 })
-        .bindTooltip(`${esc(label)}: ${esc(a.iata)} — ${placeLabel(a)}`, { direction: "top", offset: [0, -8] })
+    L.marker([a.lat, a.lon], { icon, zIndexOffset: kind === "stop" ? 900 : 1000, keyboard: false })
+        .bindTooltip(`${esc(a.iata)} — ${esc(a.name)}`, { direction: "top", offset: [0, -12] })
         .addTo(endpointMarkers);
 }
 
+// Pins near the right-hand edge put their label on the left, so it isn't cut off.
+function updatePinSides() {
+    const w = map.getSize().x;
+    endpointMarkers.eachLayer(m => {
+        const el = m.getElement();
+        if (el) el.classList.toggle("label-left", map.latLngToContainerPoint(m.getLatLng()).x > w - 190);
+    });
+}
+map.on("moveend zoomend resize", updatePinSides);
+
+// Extra room on the right so the city labels beside each pin aren't cut off.
 function fitTo(points) {
-    map.fitBounds(L.latLngBounds(points), { padding: [60, 60], maxZoom: 7 });
+    const w = map.getSize().x;
+    map.fitBounds(L.latLngBounds(points), {
+        paddingTopLeft: [Math.min(70, w * 0.12), 70],
+        paddingBottomRight: [Math.min(170, w * 0.32), 50],
+        maxZoom: 6,
+    });
+    updatePinSides();
 }
 
 // ---- Route data helpers -------------------------------------------------
@@ -392,6 +438,12 @@ const BUDGET = new Set([
     "NK", "WN", "F9", "G4", "B6", "Y4", "4O", "AD"
 ]);
 const hasBudget = codes => codes.some(c => BUDGET.has(c));
+
+// Countries not used as stopovers: since 2022 Russia and Belarus are cut off from UK/EU/US
+// airlines and airspace, and Ukraine's airspace is closed. Skipped unless the trip starts or ends there.
+const CLOSED_COUNTRIES = new Set(["RU", "BY", "UA"]);
+let closedForTrip = CLOSED_COUNTRIES;
+const closedHub = a => closedForTrip.has(a.country);
 
 // Airports near `a` (including `a`) that actually have routes — lets a London
 // search use Stansted/Luton/Gatwick too, which is where a lot of savings are.
@@ -502,6 +554,7 @@ function findSplits(a, b, origins, dests, stops = 1) {
             if (h === undefined || h > legsLeft - 1) continue;      // can't reach B in time
             const next = byIata.get(e.to);
             if (!next) continue;
+            if (!destByIata.has(next.iata) && closedHub(next)) continue;
             const legKm = haversine(node, next);
             if (legKm < 150) continue;                               // skip pointless hops
             const soFar = dist + legKm;
@@ -532,7 +585,7 @@ function estimatedSplits(a, b) {
     const out = [];
     for (const c of AIRPORTS) {
         if (c.iata === a.iata || c.iata === b.iata) continue;
-        if (c.type !== "large_airport" || !c.sched) continue;
+        if (c.type !== "large_airport" || !c.sched || closedHub(c)) continue;
         const { cross, frac } = crossTrack(a, b, c);
         if (frac <= 0.08 || frac >= 0.92) continue;
         const dist = haversine(a, c) + haversine(c, b);
@@ -599,147 +652,378 @@ function searchLinks(from, to, date) {
     `;
 }
 
-// ---- Prices the user types in -------------------------------------------------
-// Keyed by "FROM-TO-DATE" so the same leg shares a price across cards.
-const prices = new Map();      // key → number used in totals (typed or auto)
-const typedKeys = new Set();    // keys the user typed themselves; auto prices never overwrite these
-const autoFares = new Map();    // key → fare from /api/prices, or null if none found
+// ---- Prices -------------------------------------------------
+// Keyed by city codes and date ("LON-AUH-2026-12-14"), so the same flight shares a price across
+// cards, and a fare from any London airport counts for London.
+const prices = new Map();       // key → number used in totals (typed or looked up)
+const typedKeys = new Set();    // keys the user typed themselves; looked-up prices never overwrite these
 const priceKey = (from, to, date) => `${from}-${to}-${date}`;
+const parseKey = k => ({ from: k.slice(0, 3), to: k.slice(4, 7), date: k.slice(8) });
+const { addDays: pAddDays, dayDiff, datesBetween } = Planner;
+
+// Looked-up fares, per city pair and day:
+//   dayFares["LON-AUH"] = Map("2026-12-14" → fare | null)   (null = looked up, nothing seen)
+const dayFares = new Map();
+function fareOn(from, to, date) {         // fare | null (none seen) | undefined (not looked up)
+    const m = dayFares.get(`${from}-${to}`);
+    return m ? m.get(date) : undefined;
+}
+const fareForKey = key => { const { from, to, date } = parseKey(key); return fareOn(from, to, date); };
+// Did we see any fare at all for this pair in the dates we looked at?
+const pairHasFares = (from, to) => { const m = dayFares.get(`${from}-${to}`); return !!m && [...m.values()].some(Boolean); };
 
 function priceBox(key) {
     const v = prices.has(key) ? prices.get(key) : "";
-    const auto = autoFares.get(key) && !typedKeys.has(key) ? " auto" : "";
+    const auto = !typedKeys.has(key) && fareForKey(key) ? " auto" : "";
     return `<label class="price-input${auto}"><span>${CURRENCY}</span><input type="number" min="0" step="1" inputmode="decimal" placeholder="price" data-price-key="${esc(key)}" value="${v}"></label>`;
 }
-// A line under each price box saying where an auto price came from.
-const fareNote = key => `<div class="fare-note" data-note-key="${esc(key)}">${fareNoteHtml(key)}</div>`;
+
+function ago(iso) {
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return "";
+    const h = (Date.now() - t) / 3600000;
+    return h < 1 ? "seen just now" : h < 24 ? `seen ${Math.round(h)}h ago` : `seen ${Math.round(h / 24)} day${Math.round(h / 24) > 1 ? "s" : ""} ago`;
+}
+
+// The line under each price box saying where a looked-up price came from.
+function fareNoteHtml(key, approx) {
+    if (typedKeys.has(key)) return "";
+    const f = fareForKey(key);
+    if (f === undefined) return "";
+    if (f === null) return `<span class="muted">No recent fare seen for this flight — check the links.</span>`;
+    const bits = [];
+    if (approx) bits.push(`<span class="approx">nearest fare to your date</span>`);
+    if (f.fromAirport && f.toAirport) bits.push(`${esc(f.fromAirport)} → ${esc(f.toAirport)}`);
+    else if (f.fromAirport) bits.push(`from ${esc(f.fromAirport)}`);
+    else if (f.toAirport) bits.push(`to ${esc(f.toAirport)}`);
+    if (f.airline) bits.push(esc(AIRLINE_NAMES[f.airline] || f.airline));
+    if (f.transfers != null) bits.push(f.transfers === 0 ? "nonstop" : `${f.transfers} change${f.transfers > 1 ? "s" : ""}`);
+    if (f.foundAt) bits.push(ago(f.foundAt));
+    const link = f.link ? ` · <a href="${esc(f.link)}" target="_blank" rel="noopener">Book on Aviasales ↗</a>` : "";
+    return `Recent fare${bits.length ? " · " + bits.join(" · ") : ""}${link}`;
+}
+
+// Put the looked-up price for a key into the totals (unless the user typed one).
+function syncAutoPrice(key) {
+    if (typedKeys.has(key)) return;
+    const f = fareForKey(key);
+    if (f) prices.set(key, f.price);
+    else if (f === null) prices.delete(key);
+}
+
+// ---- Trip costs beyond the flights -------------------------------------------------
+// Rough nightly cost of a budget hotel or private room, in £, by country. A guide only.
+const NIGHT_COST = (() => {
+    const tiers = {
+        20: "VN KH LA IN NP LK BD PK MM EG BO NI KG UZ TJ ET",
+        30: "TH MY PH ID TR GE AM AZ MA TN CO PE EC GT MX AL MK RS BA ME KE TZ UG RW ZM ZW GH SN LB",
+        45: "CN TW PL HU CZ SK RO BG HR SI LT LV EE PT GR CY MT ES ZA BR AR CL UY KZ OM JO MU CR PA BW NA MN",
+        70: "KR JP IT FR DE AT BE NL IE FI SE AE QA SA BH KW IL CA US AU NZ HK MO GB PR",
+        100: "CH NO IS DK SG LU MC MV BS BM",
+    };
+    const m = new Map();
+    for (const [cost, ccs] of Object.entries(tiers)) ccs.split(" ").forEach(cc => m.set(cc, +cost));
+    return m;
+})();
+const nightCost = cc => NIGHT_COST.get(cc) || 45;
+const BAG_FEE = 35;   // typical hold-bag fee on a budget airline, per flight
+
+const costsInput = document.getElementById("costs-input");
+const bagsInput = document.getElementById("bags-input");
+
+// Is this flight likely to charge for a hold bag? Budget airlines do; full-service ones mostly don't.
+function budgetFlight(l) {
+    const f = fareForKey(l.key);
+    if (f && f.airline) return BUDGET.has(f.airline);
+    return !!(l.edge && l.edge.airlines.length && l.edge.airlines.every(c => BUDGET.has(c)));
+}
+
+// { stays, nights, bags } for a route's current dates.
+function extraCosts(route) {
+    let stays = 0, nights = 0;
+    route.legs.forEach((l, j) => {
+        if (j === 0) return;
+        const n = dayDiff(l.date, route.legs[j - 1].date);
+        nights += n;
+        stays += n * nightCost(l.from.country);
+    });
+    const bags = bagsInput.checked ? route.legs.filter(budgetFlight).length * BAG_FEE : 0;
+    return { stays: costsInput.checked ? stays : 0, nights, bags };
+}
+
+// ---- Countries you've been to -------------------------------------------------
+let visited = new Set();
+try { visited = new Set(JSON.parse(localStorage.getItem("visited") || "[]")); } catch { /* storage blocked */ }
+const visitedInput = document.getElementById("visited-input");
+const visitedList = document.getElementById("visited-list");
+const visitedOptions = document.getElementById("visited-options");
+const ALL_COUNTRIES = [...new Set(AIRPORTS.map(a => a.country).filter(Boolean))]
+    .map(cc => ({ cc, name: countryName(cc) })).sort((x, y) => x.name.localeCompare(y.name));
+visitedOptions.innerHTML = ALL_COUNTRIES.map(c => `<option value="${esc(c.name)}">`).join("");
+
+function saveVisited() {
+    try { localStorage.setItem("visited", JSON.stringify([...visited])); } catch { /* storage blocked */ }
+    renderVisited();
+    if (current) runSearch();
+}
+function renderVisited() {
+    visitedList.innerHTML = [...visited].sort((x, y) => countryName(x).localeCompare(countryName(y))).map(cc =>
+        `<button type="button" class="chip" data-cc="${esc(cc)}" title="Remove">${flag(cc)} ${esc(countryName(cc))} ×</button>`).join("");
+    document.getElementById("visited-count").textContent = visited.size ? `${visited.size} so far` : "";
+}
+visitedInput.addEventListener("change", () => {
+    const q = visitedInput.value.trim().toLowerCase();
+    const hit = ALL_COUNTRIES.find(c => c.name.toLowerCase() === q || c.cc.toLowerCase() === q);
+    visitedInput.value = "";
+    if (hit && !visited.has(hit.cc)) { visited.add(hit.cc); saveVisited(); }
+});
+visitedList.addEventListener("click", e => {
+    const chip = e.target.closest("[data-cc]");
+    if (chip) { visited.delete(chip.dataset.cc); saveVisited(); }
+});
+renderVisited();
+
+// ---- Stopover cities worth a stay -------------------------------------------------
+// City codes of well-known stopover cities: good transport from the airport, plenty to do in a
+// day or two, and often an airline stopover deal. They get a tag and a small ranking boost.
+const GREAT_STOPOVERS = new Set(("IST DXB DOH AUH SIN HKG BKK KUL TPE SEL TYO REK LIS HEL AMS PRG BUD " +
+    "ATH BCN ROM PAR MAD CPH MCT DEL BOM CMB NBO ADD JNB SYD AKL HNL YVR NYC MEX LIM BOG PTY").split(" "));
+const isGreatStop = a => GREAT_STOPOVERS.has(metro(a));
+
+// ---- Fitting a route into the time budget -------------------------------------------------
+const lookupLegs = route => route.legs.map(l => ({ from: metro(l.from), to: metro(l.to) }));
+
+// Choose dates for a route; sets leg.date / leg.key / leg.approx.
+function planRoute(route, ctx) {
+    const { dates, approx } = Planner.planDates(lookupLegs(route), ctx, fareOn, liveState === "on");
+    route.legs.forEach((l, j) => {
+        l.date = dates[j];
+        l.key = priceKey(metro(l.from), metro(l.to), l.date);
+        l.approx = j === 0 && approx;
+        syncAutoPrice(l.key);
+    });
+    // With prices on, a route with a flight nobody has priced recently probably doesn't run.
+    route.noFares = liveState === "on" && route.legs.some(l => !pairHasFares(metro(l.from), metro(l.to)));
+}
+
+// Date ranges still to look up for these routes.
+function windowsNeeded(routes, ctx) {
+    return Planner.windowsFor(routes.map(lookupLegs), ctx).filter(w => {
+        const m = dayFares.get(`${w.from}-${w.to}`);
+        return !m || datesBetween(w.start, w.end).some(d => !m.has(d));
+    });
+}
 
 // ---- Automatic prices (/api/prices) -------------------------------------------------
 // Point the app at an API on another host with: <script>window.PRICE_API_URL = "https://…/api/prices"</script>
 const PRICE_API = window.PRICE_API_URL || "api/prices";
 let liveState = "unknown";      // "unknown" | "off" (no backend / no token) | "on" | "error"
 let searchSeq = 0;              // ignores responses from a search the user has since replaced
-const MANUAL_NOTE = `No prices yet, so "cheapest" is a best guess (budget airlines, airline changes, big hubs). Add leg prices to rank by real totals.`;
-
-function fareNoteHtml(key) {
-    if (!autoFares.has(key) || typedKeys.has(key)) return "";
-    const f = autoFares.get(key);
-    if (!f) return `<span class="muted">No recent fare seen for this leg — check the links.</span>`;
-    const bits = [];
-    if (!f.exactDate) bits.push(`<span class="approx">nearest fare is ${prettyDate(f.date)}</span>`);
-    if (f.airline) bits.push(esc(AIRLINE_NAMES[f.airline] || f.airline));
-    if (f.transfers != null) bits.push(f.transfers === 0 ? "nonstop" : `${f.transfers} change${f.transfers > 1 ? "s" : ""}`);
-    const link = f.link ? ` · <a href="${esc(f.link)}" target="_blank" rel="noopener">Book on Aviasales ↗</a>` : "";
-    return `Recent fare${bits.length ? " · " + bits.join(" · ") : ""}${link}`;
-}
-
-function applyAutoFare(key) {
-    const f = autoFares.get(key);
-    if (typedKeys.has(key)) return;
-    if (f) prices.set(key, f.price); else prices.delete(key);
-    resultsPanel.querySelectorAll(`[data-price-key="${CSS.escape(key)}"]`).forEach(inp => {
-        inp.value = f ? f.price : "";
-        inp.closest(".price-input").classList.toggle("auto", !!f);
-    });
-    resultsPanel.querySelectorAll(`[data-note-key="${CSS.escape(key)}"]`).forEach(el => { el.innerHTML = fareNoteHtml(key); });
-}
+const MANUAL_NOTE = `No prices yet, so "cheapest" is a best guess (budget airlines, airline changes, big hubs). Add flight prices to rank by real totals.`;
+const API_BATCH = 60;
 
 function setLiveStatus(html) {
     const el = resultsPanel.querySelector(".live-status");
     if (el) el.innerHTML = html;
 }
 
-async function fetchFares(seq) {
-    if (liveState === "off") return;
-    const allKeys = [...new Set([...resultsPanel.querySelectorAll("[data-price-key]")].map(i => i.dataset.priceKey))];
-    const keys = allKeys.filter(k => !autoFares.has(k));
-    const doneMsg = () => {
-        const found = allKeys.filter(k => autoFares.get(k)).length;
-        setLiveStatus(`Prices filled in for ${found} of ${allKeys.length} flights from fares seen in the last few days. ` +
-            `They're a guide, not a quote: confirm before booking.`);
-    };
-    if (!keys.length) { if (liveState === "on") doneMsg(); return; }
-    setLiveStatus(`<span class="spinner"></span>Looking up prices for ${keys.length} flight${keys.length > 1 ? "s" : ""}…`);
-    const legs = keys.map(k => ({ from: k.slice(0, 3), to: k.slice(4, 7), date: k.slice(8) }));
-    let body;
-    try {
-        const r = await fetch(PRICE_API, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ legs }),
-        });
-        body = r.headers.get("content-type")?.includes("json") ? await r.json() : null;
-        if (!body) throw Object.assign(new Error("no API"), { off: true });   // e.g. static hosting, 404 page
-        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
-    } catch (e) {
-        if (seq !== searchSeq) return;
-        if (e.off || e instanceof TypeError) {
-            liveState = "off";
-            setLiveStatus(MANUAL_NOTE);
-        } else {
-            liveState = "error";
-            setLiveStatus(`Couldn't load prices (${esc(e.message)}). ${MANUAL_NOTE}`);
-        }
-        return;
-    }
-    if (body.configured === false) { liveState = "off"; if (seq === searchSeq) setLiveStatus(MANUAL_NOTE); return; }
-    liveState = "on";
-    for (const r of body.results || []) autoFares.set(priceKey(r.from, r.to, r.date), r.fare || null);
-    if (seq !== searchSeq) return;   // fares are cached above; the user has moved on
-
-    keys.forEach(applyAutoFare);
-    doneMsg();
-    updateTotals();
-    applySort();
+async function callApi(payload) {
+    const r = await fetch(PRICE_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+    const body = r.headers.get("content-type")?.includes("json") ? await r.json() : null;
+    if (!body) throw Object.assign(new Error("no API"), { off: true });   // e.g. static hosting, 404 page
+    if (body.configured === false) throw Object.assign(new Error("not configured"), { off: true });
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    return body;
 }
 
+// Main airport for a city code (most routes in the route data), for routes found from fares.
+let cityAirports = null;
+function airportForCity(code) {
+    if (!cityAirports) {
+        cityAirports = new Map();
+        for (const a of AIRPORTS) {
+            const c = metro(a), cur = cityAirports.get(c);
+            if (!cur || connectionCount(a.iata) > connectionCount(cur.iata)) cityAirports.set(c, a);
+        }
+    }
+    return cityAirports.get(code) || byIata.get(code) || null;
+}
+const cityHasRoute = (fromCode, toCode) => {
+    for (const a of AIRPORTS) {
+        if (metro(a) !== fromCode || !ROUTES[a.iata]) continue;
+        if (ROUTES[a.iata].some(e => { const t = byIata.get(e.to); return t && metro(t) === toCode; })) return true;
+    }
+    return false;
+};
+
+// Price-first route finding: stopovers in cities you can fly to cheaply from the origin and
+// on cheaply to the destination, from recent fares. Adds routes the old route data misses.
+function routesFromExplore(ex, c) {
+    const { a, b, ctx, maxStops } = c;
+    const ends = new Set([metro(a), metro(b)]);
+    const ok = code => {
+        const ap = airportForCity(code);
+        return ap && !ends.has(code) && !closedHub(ap) ? ap : null;
+    };
+    const out = new Map(ex.outbound.map(x => [x.code, x])), inb = new Map(ex.inbound.map(x => [x.code, x]));
+    const found = [];
+    if (Planner.feasible(1, ctx)) {
+        for (const [code, o] of out) {
+            const i = inb.get(code), hub = ok(code);
+            if (i && hub) found.push({ hubs: [hub], guess: o.price + i.price });
+        }
+    }
+    if (maxStops >= 2 && Planner.feasible(2, ctx)) {
+        const firsts = ex.outbound.slice(0, 15), lasts = ex.inbound.slice(0, 15);
+        for (const o of firsts) for (const i of lasts) {
+            const h1 = ok(o.code), h2 = ok(i.code);
+            if (!h1 || !h2 || o.code === i.code || !cityHasRoute(o.code, i.code)) continue;
+            found.push({ hubs: [h1, h2], guess: o.price + i.price + 60 });
+        }
+    }
+    found.sort((x, y) => x.guess - y.guess);
+    return found.slice(0, 12).map(f => {
+        const path = [a, ...f.hubs, b];
+        const dist = path.slice(1).reduce((t, p, j) => t + haversine(path[j], p), 0);
+        return {
+            path, hubs: f.hubs, o: a, d: b, ratio: dist / haversine(a, b), budgetLegs: 0, airlineChanges: 0, fromFares: true,
+            legs: path.slice(0, -1).map((from, j) => ({ from, to: path[j + 1], edge: findEdge(from.iata, path[j + 1].iata) })),
+        };
+    });
+}
+
+async function fetchFares(seq) {
+    if (liveState === "off" || !current) return;
+    const c = current;
+    const fail = e => {
+        if (seq !== searchSeq) return;
+        if (e.off || e instanceof TypeError) { liveState = "off"; setLiveStatus(MANUAL_NOTE); }
+        else { liveState = "error"; setLiveStatus(`Couldn't load prices (${esc(e.message)}). ${MANUAL_NOTE}`); }
+    };
+
+    // 1. Explore: find stopover cities from recent fares (once per search).
+    if (!c.explored) {
+        setLiveStatus(`<span class="spinner"></span>Finding cheap stopover cities from recent fares…`);
+        try {
+            const body = await callApi({ explore: {
+                from: metro(c.a), to: metro(c.b),
+                start: pAddDays(c.ctx.depart, -Planner.SHIFT_DAYS), end: pAddDays(c.ctx.depart, c.ctx.days + Planner.SHIFT_DAYS),
+            } });
+            liveState = "on";
+            c.explored = true;
+            if (seq !== searchSeq) return;
+            const seen = new Set(c.routes.map(routeSignature));
+            const extra = routesFromExplore(body.explore || { outbound: [], inbound: [] }, c).filter(r => !seen.has(routeSignature(r)));
+            extra.forEach(r => {
+                r.idx = c.routes.length;
+                r.countries = newCountries(r, c.a, c.b);
+                planRoute(r, c.ctx);
+                c.routes.push(r);
+            });
+            if (extra.length) renderList();
+        } catch (e) { return fail(e); }
+    }
+
+    // 2. Prices for every flight across the dates that could fit.
+    const windows = windowsNeeded(c.routes, c.ctx);
+    if (windows.length) {
+        setLiveStatus(`<span class="spinner"></span>Looking up prices for ${windows.length} flight${windows.length > 1 ? "s" : ""} across your dates…`);
+        let results;
+        try {
+            const batches = [];
+            for (let i = 0; i < windows.length; i += API_BATCH) batches.push(windows.slice(i, i + API_BATCH));
+            results = (await Promise.all(batches.map(w => callApi({ windows: w })))).flatMap(b => b.results || []);
+        } catch (e) { return fail(e); }
+        liveState = "on";
+        for (const w of results) {
+            const k = `${w.from}-${w.to}`;
+            if (!dayFares.has(k)) dayFares.set(k, new Map());
+            const m = dayFares.get(k);
+            for (const d of datesBetween(w.start, w.end)) if (!m.has(d) || !w.error) m.set(d, (w.days && w.days[d]) || null);
+        }
+        if (seq !== searchSeq) return;   // fares are kept above; the user has moved on
+    }
+    if (liveState !== "on") return;
+    c.routes.forEach(r => planRoute(r, c.ctx));
+    renderList();
+    const shown = c.routes.filter(r => !r.noFares);
+    const priced = shown.filter(r => r.legs.every(l => prices.has(l.key))).length;
+    const found = c.routes.filter(r => r.fromFares && !r.noFares).length;
+    setLiveStatus(`Prices found for ${priced} of ${shown.length} options from fares seen in the last few days, ` +
+        `with dates picked to be cheapest within your ${c.ctx.days ? `${c.ctx.days} day${c.ctx.days > 1 ? "s" : ""}` : "day"}` +
+        `${found ? `, including ${found} route${found > 1 ? "s" : ""} found from recent fares` : ""}. ` +
+        `They're a guide, not a quote: confirm before booking.`);
+}
+
+// ---- Totals -------------------------------------------------
 const money = n => CURRENCY + Math.round(n).toLocaleString("en-GB");
 
 function updateTotals() {
-    const beatEl = resultsPanel.querySelector("[data-beat-key]");
-    const beat = beatEl ? prices.get(beatEl.dataset.beatKey) : undefined;
+    const cards = [...resultsPanel.querySelectorAll(".option")];
+    const directCard = cards.find(c => c.dataset.direct === "1");
+    let beat;
+    const totalOf = card => {
+        const route = card._route;
+        const keys = route.legs.map(l => l.key);
+        const vals = keys.map(k => prices.get(k));
+        if (vals.some(v => v === undefined)) return { missing: vals.filter(v => v === undefined).length, n: keys.length };
+        const flights = vals.reduce((x, y) => x + y, 0);
+        const x = extraCosts(route);
+        return { flights, ...x, total: flights + x.stays + x.bags, n: keys.length };
+    };
+    if (directCard) { const t = totalOf(directCard); beat = t.total; }
     let cheapest = null;
 
-    resultsPanel.querySelectorAll(".option").forEach(card => {
-        const keys = card.dataset.keys.split("|");
-        const vals = keys.map(k => prices.get(k));
+    cards.forEach(card => {
+        const t = totalOf(card);
         const el = card.querySelector(".total");
-        const n = keys.length;
-        const word = n === 2 ? "Two" : n === 3 ? "Three" : n === 4 ? "Four" : String(n);
         const nc = +card.dataset.countries || 0;
-        const extra = nc ? ` · <span class="countries">+${nc} countr${nc > 1 ? "ies" : "y"}</span>` : "";
-        if (vals.some(v => v === undefined)) {
-            const missing = vals.filter(v => v === undefined).length;
-            el.innerHTML = (missing === n ? `Add all ${n} ticket prices to see the total.`
-                : `${missing} of ${n} prices missing — type ${missing > 1 ? "them" : "it"} in to see the total.`) + extra;
+        const extra = nc ? ` · <span class="countries">+${nc} new countr${nc > 1 ? "ies" : "y"}</span>` : "";
+        const isDirect = card === directCard;
+        if (t.total === undefined) {
+            el.innerHTML = (isDirect ? "Add the one-ticket price to compare against."
+                : t.missing === t.n ? `Add all ${t.n} ticket prices to see the total.`
+                : `${t.missing} of ${t.n} prices missing — type ${t.missing > 1 ? "them" : "it"} in to see the total.`) + extra;
             card._total = null;
             return;
         }
-        const total = vals.reduce((x, y) => x + y, 0);
-        card._total = total;
-        const lead = `${word} tickets: <strong>${money(total)}</strong>`;
-        if (beat === undefined) {
-            el.innerHTML = `${lead} · add the one-ticket price above to compare${extra}`;
-        } else if (total < beat) {
-            el.innerHTML = `${lead} · <span class="save">${money(beat - total)} cheaper</span> than one ticket${extra}`;
-        } else if (total > beat) {
-            el.innerHTML = `${lead} · <span class="lose">${money(total - beat)} dearer</span> than one ticket${extra}`;
+        card._total = t.total;
+        const parts = [`Flights ${money(t.flights)}`];
+        if (t.stays) parts.push(`${t.nights} night${t.nights > 1 ? "s" : ""} ≈ ${money(t.stays)}`);
+        if (t.bags) parts.push(`bags ≈ ${money(t.bags)}`);
+        const lead = parts.length > 1 ? `${parts.join(" + ")} = <strong>${money(t.total)}</strong>` : `<strong>${money(t.total)}</strong>`;
+        if (isDirect) {
+            el.innerHTML = `One ticket: ${lead} · the price to beat`;
         } else {
-            el.innerHTML = `${lead} · same as one ticket${extra}`;
+            el.innerHTML = beat === undefined ? `${lead}${extra}`
+                : t.total < beat ? `${lead} · <span class="save">${money(beat - t.total)} cheaper</span> than direct${extra}`
+                : t.total > beat ? `${lead} · <span class="lose">${money(t.total - beat)} dearer</span> than direct${extra}`
+                : `${lead} · same as direct${extra}`;
         }
-        if (cheapest === null || total < cheapest._total) cheapest = card;
+        if (!card.hidden && (cheapest === null || t.total < cheapest._total)) cheapest = card;
     });
 
     resultsPanel.querySelectorAll(".tag.cheapest").forEach(t => t.remove());
-    if (cheapest) {
-        cheapest.querySelector(".tags").insertAdjacentHTML("afterbegin", `<span class="tag good cheapest">Cheapest split</span>`);
-    }
+    if (cheapest) cheapest.querySelector(".tags").insertAdjacentHTML("afterbegin", `<span class="tag good cheapest">Cheapest</span>`);
 }
+[costsInput, bagsInput].forEach(el => el.addEventListener("change", () => {
+    try { localStorage.setItem("costs", JSON.stringify({ stays: costsInput.checked, bags: bagsInput.checked })); } catch { /* storage blocked */ }
+    updateTotals(); applySort();
+}));
+try {
+    const c = JSON.parse(localStorage.getItem("costs") || "null");
+    if (c) { costsInput.checked = !!c.stays; bagsInput.checked = !!c.bags; }
+} catch { /* storage blocked */ }
 
 // ---- Ranking: cheapest ←→ most countries -------------------------------------------------
 // rankWeight 0 = cheapest total first, 100 = most new countries first, in between blends the two:
-//   score = (1 − w) · price + w · (1 − countries), both scaled 0–1 across the current results.
-// With no prices yet, "price" falls back to the best-guess order from the route data.
+//   score = (1 − w) · price + w · (1 − places), both scaled 0–1 across the current results,
+// where places = new countries + half a point per great stopover city. The direct flight is
+// ranked too. With no prices yet, "price" falls back to the best-guess order from the route data.
 let rankWeight = 0;
 try { rankWeight = Math.min(100, Math.max(0, +localStorage.getItem("rankWeight") || 0)); } catch { /* storage blocked */ }
 
@@ -750,19 +1034,22 @@ function applySort() {
     if (!list) return;
     const label = resultsPanel.querySelector(".rank-value");
     if (label) label.textContent = rankLabel(rankWeight);
+    const slider = resultsPanel.querySelector(".rank-slider");
+    if (slider && +slider.value !== rankWeight) slider.value = rankWeight;
 
     const cards = [...list.querySelectorAll(".option")];
     const totals = cards.map(c => c._total).filter(t => t != null);
     const lo = Math.min(...totals), hi = Math.max(...totals);
-    const maxCountries = Math.max(0, ...cards.map(c => +c.dataset.countries || 0));
+    const placesOf = c => (+c.dataset.countries || 0) + 0.5 * (+c.dataset.great || 0);
+    const maxPlaces = Math.max(0, ...cards.map(placesOf));
     const w = rankWeight / 100;
     const priceScore = c => {
         if (!totals.length) return cards.length > 1 ? +c.dataset.idx / (cards.length - 1) : 0;
         if (c._total == null) return 1.5;                 // unpriced after priced ones
         return hi > lo ? (c._total - lo) / (hi - lo) : 0;
     };
-    const countryScore = c => maxCountries ? 1 - (+c.dataset.countries || 0) / maxCountries : 0;
-    const score = new Map(cards.map(c => [c, (1 - w) * priceScore(c) + w * countryScore(c)]));
+    const placeScore = c => maxPlaces ? 1 - placesOf(c) / maxPlaces : 0;
+    const score = new Map(cards.map(c => [c, (1 - w) * priceScore(c) + w * placeScore(c)]));
     // Ties (e.g. same number of countries) go to the cheaper route, then the best guess.
     cards.sort((x, y) => (score.get(x) - score.get(y)) || (priceScore(x) - priceScore(y)) || (+x.dataset.idx - +y.dataset.idx));
     cards.forEach(c => list.appendChild(c));
@@ -773,28 +1060,16 @@ resultsPanel.addEventListener("input", (e) => {
     rankWeight = +e.target.value;
     try { localStorage.setItem("rankWeight", String(rankWeight)); } catch { /* storage blocked */ }
     applySort();
+    updateHash();
 });
 
-// Re-sort once a price is committed (blur / Enter), not on every keystroke,
-// so the card you're typing in doesn't jump around.
-resultsPanel.addEventListener("change", (e) => {
-    const key = e.target.dataset && e.target.dataset.priceKey;
-    if (!key) return;
-    if (e.target.value === "" && autoFares.get(key)) {   // cleared → go back to the looked-up price
-        typedKeys.delete(key);
-        applyAutoFare(key);
-        updateTotals();
-    }
-    applySort();
-});
-
+// Typing a price: it overrides the looked-up one everywhere that flight appears.
 resultsPanel.addEventListener("input", (e) => {
     const key = e.target.dataset && e.target.dataset.priceKey;
     if (!key) return;
     const n = parseFloat(e.target.value);
     if (Number.isFinite(n) && n >= 0) prices.set(key, n); else prices.delete(key);
     typedKeys.add(key);
-    // keep any other box for the same leg in sync
     resultsPanel.querySelectorAll(`[data-price-key="${CSS.escape(key)}"]`).forEach(inp => {
         if (inp !== e.target) inp.value = e.target.value;
         inp.closest(".price-input").classList.remove("auto");
@@ -803,159 +1078,318 @@ resultsPanel.addEventListener("input", (e) => {
     updateTotals();
 });
 
-// ---- Results rendering -------------------------------------------------
-function renderResults(a, b) {
-    const date1 = dateInput.value || addDays(isoDate(new Date()), 30);
-    const nights = parseInt(nightsInput.value, 10) || 0;
-    const stops = parseInt(stopsInput.value, 10) || 1;
+// Re-sort once a price is committed (blur / Enter), not on every keystroke, so the card you're
+// typing in doesn't jump around. Clearing a typed price brings back the looked-up one.
+resultsPanel.addEventListener("change", (e) => {
+    const key = e.target.dataset && e.target.dataset.priceKey;
+    if (!key) return;
+    if (e.target.value === "" && fareForKey(key)) {
+        typedKeys.delete(key);
+        syncAutoPrice(key);
+        resultsPanel.querySelectorAll(`[data-price-key="${CSS.escape(key)}"]`).forEach(inp => {
+            inp.value = prices.get(key);
+            inp.closest(".price-input").classList.add("auto");
+        });
+        resultsPanel.querySelectorAll(`[data-note-key="${CSS.escape(key)}"]`).forEach(el => {
+            el.innerHTML = fareNoteHtml(key, el.dataset.approx === "1");
+        });
+        updateTotals();
+    }
+    applySort();
+});
 
+// ---- Results rendering -------------------------------------------------
+let current = null;   // { a, b, ctx, maxStops, routes, explored }
+
+const nightsText = n => n === 0 ? "Same-day connection" : `${n} night${n > 1 ? "s" : ""}`;
+// Routes that visit the same cities in the same order are the same trip for pricing.
+const routeSignature = r => r.path.map(metro).join(">");
+// New countries a route adds: not where you start or end, and not ones you've been to.
+function newCountries(r, a, b) {
+    const skip = new Set([a.country, b.country, r.o.country, r.d.country, ...visited]);
+    return [...new Set(r.hubs.map(h => h.country).filter(c => c && !skip.has(c)))];
+}
+
+function legHtml(l) {
+    return `
+        <div class="leg">
+            <div class="leg-head">
+                <span class="leg-route">${esc(l.from.iata)} → ${esc(l.to.iata)}</span>
+                <span class="leg-date">${prettyDate(l.date)} · ~${flightTimeStr(haversine(l.from, l.to))}</span>
+            </div>
+            <div class="leg-air">${l.edge ? esc(airlineLabel(l.edge.airlines)) : l.direct ? "" : "Not in the 2014 route data — check it runs"}</div>
+            <div class="price-row">${priceBox(l.key)}${searchLinks(l.from.iata, l.to.iata, l.date)}</div>
+            <div class="fare-note" data-note-key="${esc(l.key)}" data-approx="${l.approx ? 1 : 0}">${fareNoteHtml(l.key, l.approx)}</div>
+        </div>`;
+}
+
+// Flights, the stays between them, the total and the multi-city link for one route.
+function renderRouteBody(route) {
+    const card = resultsPanel.querySelector(`.option[data-idx="${route.idx}"]`);
+    if (!card) return;
+    card._route = route;
+    const parts = [];
+    route.legs.forEach((l, j) => {
+        if (j > 0) {
+            const stay = dayDiff(l.date, route.legs[j - 1].date);
+            const cost = stay && costsInput.checked ? ` <span class="stay-cost">≈ ${money(nightCost(l.from.country))}/night</span>` : "";
+            parts.push(`<div class="stay">${stay ? "🛏️" : "⏱️"} ${nightsText(stay)} in ${placeLabel(l.from)}${cost}</div>`);
+        }
+        parts.push(legHtml(l));
+    });
+    card.querySelector(".legs").innerHTML = parts.join("");
+    card.dataset.keys = route.legs.map(l => l.key).join("|");
+    const arrive = route.legs[route.legs.length - 1].date;
+    const span = dayDiff(arrive, route.legs[0].date);
+    card.querySelector(".trip-span").textContent = route.direct ? "" :
+        `Leave ${prettyDate(route.legs[0].date)}, last flight ${prettyDate(arrive)}${span ? ` (${span} day${span > 1 ? "s" : ""})` : " (same day)"}`;
+    const multi = card.querySelector(".multi-link");
+    if (multi) multi.href = googleMultiCityUrl(route.legs.map(l => ({ from: l.from.iata, to: l.to.iata, date: l.date })));
+}
+
+// All routes for this search: the direct flight plus splits with 1 … maxStops stops.
+function buildRoutes(a, b, ctx, maxStops) {
     const origins = nearbyAirports(a);
     const dests = nearbyAirports(b);
-    let splits = findSplits(a, b, origins, dests, stops);
-    const usingEstimate = splits.length === 0 && stops === 1;
-    if (usingEstimate) splits = estimatedSplits(a, b);
+    const routes = [{
+        direct: true, path: [a, b], hubs: [], o: a, d: b, ratio: 1,
+        legs: [{ from: a, to: b, edge: findEdge(a.iata, b.iata), direct: true }],
+    }];
+    const seen = new Set([routeSignature(routes[0])]);
+    const skipped = [];
+    let estimated = false;
+    for (let stops = 1; stops <= maxStops; stops++) {
+        if (!Planner.feasible(stops, ctx)) { skipped.push(stops); continue; }
+        let splits = findSplits(a, b, origins, dests, stops);
+        if (!splits.length && stops === 1) { splits = estimatedSplits(a, b); estimated = splits.length > 0; }
+        let added = 0;
+        for (const s of splits) {
+            if (added >= (stops === 1 ? 12 : 8)) break;
+            const r = { ...s, legs: s.path.slice(0, -1).map((from, j) => ({ from, to: s.path[j + 1], edge: s.edges[j] })) };
+            const sig = routeSignature(r);
+            if (seen.has(sig)) continue;   // e.g. the same trip from Heathrow and from Gatwick
+            seen.add(sig);
+            routes.push(r);
+            added++;
+        }
+    }
+    routes.forEach((r, i) => { r.idx = i; r.countries = newCountries(r, a, b); });
+    return { routes, skipped, estimated };
+}
+
+function routeCardHtml(route, a, b) {
+    const tags = [];
+    let title, subtitle = "", right = "";
+    const great = route.hubs.filter(isGreatStop);
+    if (route.direct) {
+        const nonstop = route.legs[0].edge;
+        title = `Direct — one ticket`;
+        subtitle = `<div class="option-places">${nonstop
+            ? `Nonstop listed in the route data · ~${flightTimeStr(haversine(a, b))}`
+            : `No nonstop in the route data, so this will usually have a connection`}</div>`;
+        tags.push(`<span class="tag">The price to beat</span>`);
+    } else {
+        const s = route;
+        const stops = s.hubs.length;
+        title = stops === 1 ? `via ${esc(s.hubs[0].iata)} — ${placeLabel(s.hubs[0])}` : `via ${s.hubs.map(h => esc(h.iata)).join(" → ")}`;
+        if (stops > 1) subtitle = `<div class="option-places">${s.hubs.map(placeLabel).join(" → ")}</div>`;
+        const extraPct = Math.round((s.ratio - 1) * 100);
+        right = extraPct <= 0 ? "no detour" : `+${extraPct}% distance`;
+        if (route.countries.length) tags.push(`<span class="tag country">${route.countries.map(c => flag(c, countryName(c))).join("")} +${route.countries.length} new countr${route.countries.length > 1 ? "ies" : "y"}</span>`);
+        tags.push(`<span class="tag">${stops} stop${stops > 1 ? "s" : ""}</span>`);
+        if (great.length) tags.push(`<span class="tag great" title="${esc(great.map(placeName).join(", "))}">⭐ Great stopover${great.length > 1 ? "s" : ""}</span>`);
+        if (s.fromFares) tags.push(`<span class="tag good">Found in recent fares</span>`);
+        if (s.estimate) tags.push(`<span class="tag warn">Unconfirmed</span>`);
+        if (s.budgetLegs > 0) tags.push(`<span class="tag good">Budget airline${s.budgetLegs > 1 ? `s on ${s.budgetLegs} flights` : ""}</span>`);
+        if (s.airlineChanges > 0) tags.push(`<span class="tag">${s.airlineChanges === stops ? "Different airlines" : "Airline change"}</span>`);
+        if (s.o !== a) tags.push(`<span class="tag">From ${esc(s.o.iata)}</span>`);
+        if (s.d !== b) tags.push(`<span class="tag">To ${esc(s.d.iata)}</span>`);
+    }
+    return `
+        <div class="option${route.direct ? " direct" : ""}" data-idx="${route.idx}" data-direct="${route.direct ? 1 : 0}"
+             data-countries="${route.countries.length}" data-great="${great.length}" data-keys=""${route.noFares ? " hidden" : ""}>
+            <div class="option-top">
+                <span class="option-title">${title}</span>
+                <span class="option-dist">${right}</span>
+            </div>
+            ${subtitle}
+            <div class="tags">${tags.join("")}</div>
+            <div class="trip-span"></div>
+            <div class="legs"></div>
+            <div class="total"></div>
+            ${route.direct ? "" : `<a class="multi-link" target="_blank" rel="noopener" href="#">Search the whole route on Google Flights (multi-city) ↗</a>`}
+        </div>`;
+}
+
+// The selected route in colour, with the other options shown faintly behind it.
+function drawRoute(r) {
+    clearRoute();
+    if (current) {
+        const others = [...resultsPanel.querySelectorAll(".option:not([hidden])")]
+            .map(el => current.routes[+el.dataset.idx]).filter(x => x && x !== r).slice(0, 8);
+        others.forEach(o => { for (let j = 0; j < o.path.length - 1; j++) drawLeg(o.path[j], o.path[j + 1], 0, true); });
+    }
+    const pts = [];
+    for (let j = 0; j < r.path.length - 1; j++) pts.push(...drawLeg(r.path[j], r.path[j + 1], j));
+    markPoint(r.o, "from");
+    markPoint(r.d, "to");
+    r.hubs.forEach((h, j) => {
+        const n = r.legs[j + 1] && r.legs[j] && r.legs[j + 1].date && r.legs[j].date ? dayDiff(r.legs[j + 1].date, r.legs[j].date) : null;
+        markPoint(h, "stop", j + 1, n == null ? "" : n === 0 ? "connect" : `${n} night${n > 1 ? "s" : ""}`);
+    });
+    fitTo(pts);
+}
+
+// (Re)draw the list of option cards for the current search, keeping the selected one.
+function renderList() {
+    const c = current;
+    const list = resultsPanel.querySelector(".option-list");
+    if (!c || !list) return;
+    const selectedIdx = list.querySelector(".option.selected")?.dataset.idx;
+    list.innerHTML = c.routes.map(r => routeCardHtml(r, c.a, c.b)).join("");
+    c.routes.forEach(renderRouteBody);
+
+    const hidden = c.routes.filter(r => r.noFares).length;
+    const more = resultsPanel.querySelector(".hidden-routes");
+    more.innerHTML = hidden ? `<button type="button" class="link-like">Show ${hidden} route${hidden > 1 ? "s" : ""} with no recent fares</button>
+        <span>— nobody has priced one of their flights lately, so they may not run any more (e.g. a 2014 route).</span>` : "";
+
+    list.querySelectorAll(".option").forEach(el => {
+        el.addEventListener("click", (e) => {
+            if (e.target.closest("a, input, label")) return; // don't refit the map while typing a price
+            if (el.classList.contains("selected")) return;
+            list.querySelectorAll(".option").forEach(o => o.classList.remove("selected"));
+            el.classList.add("selected");
+            drawRoute(c.routes[+el.dataset.idx]);
+        });
+    });
+
+    updateTotals();
+    applySort();
+    let sel = selectedIdx != null && list.querySelector(`.option[data-idx="${selectedIdx}"]:not([hidden])`);
+    if (!sel) {
+        sel = list.querySelector(".option:not([hidden])");
+        if (sel) drawRoute(c.routes[+sel.dataset.idx]);
+    }
+    if (sel) sel.classList.add("selected");
+}
+
+resultsPanel.addEventListener("click", e => {
+    if (e.target.closest(".hidden-routes button")) {
+        resultsPanel.querySelectorAll(".option[hidden]").forEach(el => { el.hidden = false; el.classList.add("no-fares"); });
+        resultsPanel.querySelector(".hidden-routes").innerHTML = "";
+        updateTotals();
+    }
+    if (e.target.closest(".share-btn")) shareSearch(e.target.closest(".share-btn"));
+});
+
+function renderResults(a, b) {
+    const ctx = {
+        depart: dateInput.value || addDays(isoDate(new Date()), 30),
+        days: parseInt(daysInput.value, 10) || 0,
+        minStay: parseInt(minStayInput.value, 10) || 0,
+    };
+    const maxStops = parseInt(stopsInput.value, 10) || 1;
+    closedForTrip = new Set([...CLOSED_COUNTRIES].filter(cc => cc !== a.country && cc !== b.country));
+    const { routes, skipped, estimated } = buildRoutes(a, b, ctx, maxStops);
+    current = { a, b, ctx, maxStops, routes, explored: false };
+    routes.forEach(r => planRoute(r, ctx));
 
     const direct = haversine(a, b);
-    const nonstop = findEdge(a.iata, b.iata);
-    const beatKey = priceKey(a.iata, b.iata, date1);
-    const tickets = stops + 1;
+    const budget = ctx.days === 0 ? "same day" : `within ${ctx.days} day${ctx.days > 1 ? "s" : ""}`;
+    const notes = [];
+    if (skipped.length) {
+        notes.push(`${skipped.map(n => `${n}-stop`).join(" and ")} routes don't fit: ${skipped[0]} stop${skipped[0] > 1 ? "s" : ""} × ${nightsText(ctx.minStay).toLowerCase()} needs more than ${ctx.days} day${ctx.days === 1 ? "" : "s"}. Allow more time or shorter stays.`);
+    }
+    if (estimated) notes.push(`No confirmed 1-stop route in the route data; the "Unconfirmed" ones are hubs on the way, so check each flight exists.`);
 
     let html = `
         <div class="result-header">
-            <div class="result-route">${esc(a.iata)} <span class="arrow">→</span> ${esc(b.iata)}</div>
-            <div class="result-sub">${placeLabel(a)} to ${placeLabel(b)} · ${Math.round(direct).toLocaleString()} km · ${prettyDate(date1)}</div>
+            <div class="result-route">${esc(a.iata)} <span class="arrow">→</span> ${esc(b.iata)}
+                <button type="button" class="share-btn" title="Copy a link to this search">🔗 Share</button></div>
+            <div class="result-sub">${placeLabel(a)} to ${placeLabel(b)} · ${Math.round(direct).toLocaleString()} km · leave ${prettyDate(ctx.depart)}, arrive ${budget}</div>
         </div>
-
-        <div class="options-label">1 · Price to beat <span class="sub">— one ticket all the way</span></div>
-        <div class="beat" data-beat-key="${esc(beatKey)}">
-            <div class="beat-title">${esc(a.iata)} → ${esc(b.iata)}, one ticket</div>
-            <div class="beat-sub">${nonstop
-                ? `Nonstop listed in the route data (${esc(airlineLabel(nonstop.airlines))}) · ~${flightTimeStr(direct)}. Airlines may have changed since.`
-                : `No nonstop in the route data, so the cheapest one-ticket option will have a connection.`}
-                ${liveState === "off" || liveState === "error" ? "Find the cheapest fare and type it in." : ""}</div>
-            <div class="price-row">${priceBox(beatKey)}${searchLinks(a.iata, b.iata, date1)}</div>
-            ${fareNote(beatKey)}
+        <div class="rank-bar">
+            <div class="rank-head"><span>Rank by</span><strong class="rank-value">${rankLabel(rankWeight)}</strong></div>
+            <input class="rank-slider" type="range" min="0" max="100" step="5" value="${rankWeight}"
+                aria-label="Rank routes from cheapest (left) to most new countries (right)">
+            <div class="rank-ends"><span>💷 Cheapest</span><span>Most countries 🌍</span></div>
         </div>
+        <p class="sort-note live-status">${liveState === "off" || liveState === "error" ? MANUAL_NOTE : ""}</p>
+        ${notes.map(n => `<p class="hint">${esc(n)}</p>`).join("")}
+        <div class="option-list"></div>
+        <p class="hint hidden-routes"></p>
     `;
-
-    if (splits.length) {
-        html += `<div class="options-label">2 · ${stops}-stop splits <span class="sub">— ${usingEstimate
-            ? "no confirmed split in the route data; these are hubs on the way, check both legs exist"
-            : `${tickets} separate tickets`}</span></div>
-            <div class="rank-bar">
-                <div class="rank-head"><span>Rank by</span><strong class="rank-value">${rankLabel(rankWeight)}</strong></div>
-                <input class="rank-slider" type="range" min="0" max="100" step="5" value="${rankWeight}"
-                    aria-label="Rank routes from cheapest (left) to most new countries (right)">
-                <div class="rank-ends"><span>💷 Cheapest</span><span>Most countries 🌍</span></div>
-            </div>
-            <p class="sort-note live-status">${liveState === "off" || liveState === "error" ? MANUAL_NOTE : ""}</p>
-            <div class="option-list">`;
-
-        splits.forEach((s, i) => {
-            const legs = s.path.slice(0, -1).map((from, j) => {
-                const to = s.path[j + 1];
-                const date = addDays(date1, j * nights);
-                return { from, to, edge: s.edges[j], date, key: priceKey(from.iata, to.iata, date) };
-            });
-            const extraPct = Math.round((s.ratio - 1) * 100);
-            // New countries this route adds on top of where you start and end.
-            const homeCountries = new Set([a.country, b.country, s.o.country, s.d.country]);
-            const newCountries = [...new Set(s.hubs.map(h => h.country).filter(c => c && !homeCountries.has(c)))];
-            const tags = [];
-            if (newCountries.length) tags.push(`<span class="tag country">${newCountries.map(c => flag(c, countryName(c))).join("")} +${newCountries.length} countr${newCountries.length > 1 ? "ies" : "y"}</span>`);
-            if (s.estimate) tags.push(`<span class="tag warn">Unconfirmed</span>`);
-            if (s.budgetLegs > 0) tags.push(`<span class="tag good">Budget airline${s.budgetLegs > 1 ? `s on ${s.budgetLegs} legs` : ""}</span>`);
-            if (s.airlineChanges > 0) tags.push(`<span class="tag">${s.airlineChanges === stops ? "Different airlines" : "Airline change"}</span>`);
-            if (s.o !== a) tags.push(`<span class="tag">From ${esc(s.o.iata)}</span>`);
-            if (s.d !== b) tags.push(`<span class="tag">To ${esc(s.d.iata)}</span>`);
-            if (nights > 0) {
-                const n = `${nights} night${nights > 1 ? "s" : ""}`;
-                tags.push(`<span class="tag">${stops === 1 ? `${n} in ${esc(placeName(s.hubs[0]))}` : `${n} at each stop`}</span>`);
-            }
-
-            const legHtml = l => `
-                <div class="leg">
-                    <div class="leg-head">
-                        <span class="leg-route">${esc(l.from.iata)} → ${esc(l.to.iata)}</span>
-                        <span class="leg-date">${prettyDate(l.date)} · ~${flightTimeStr(haversine(l.from, l.to))}</span>
-                    </div>
-                    <div class="leg-air">${l.edge ? esc(airlineLabel(l.edge.airlines)) : "Not in route data — check it exists"}</div>
-                    <div class="price-row">${priceBox(l.key)}${searchLinks(l.from.iata, l.to.iata, l.date)}</div>
-                    ${fareNote(l.key)}
-                </div>`;
-
-            const title = stops === 1
-                ? `via ${esc(s.hubs[0].iata)} — ${placeLabel(s.hubs[0])}`
-                : `via ${s.hubs.map(h => esc(h.iata)).join(" → ")}`;
-            const subtitle = stops === 1 ? "" :
-                `<div class="option-places">${s.hubs.map(placeLabel).join(" → ")}</div>`;
-
-            html += `
-                <div class="option${i === 0 ? " selected" : ""}" data-idx="${i}" data-countries="${newCountries.length}" data-keys="${esc(legs.map(l => l.key).join("|"))}">
-                    <div class="option-top">
-                        <span class="option-title">${title}</span>
-                        <span class="option-dist">${extraPct <= 0 ? "no detour" : `+${extraPct}% distance`}</span>
-                    </div>
-                    ${subtitle}
-                    <div class="tags">${tags.join("")}</div>
-                    ${legs.map(legHtml).join("")}
-                    <div class="total"></div>
-                    <a class="multi-link" target="_blank" rel="noopener" href="${esc(googleMultiCityUrl(legs.map(l => ({ from: l.from.iata, to: l.to.iata, date: l.date }))))}">
-                        Search the whole route on Google Flights (multi-city) ↗</a>
-                </div>
-            `;
-        });
-
-        html += `</div>`;
+    if (routes.length === 1) {
+        html += `<p class="hint">No stopover routes found within a sensible detour. Try allowing more stops or more time.</p>`;
+    } else {
         html += `
             <div class="warning">
-                <strong>Separate tickets = you're on your own at ${stops === 1 ? "the" : "every"} ${nights > 0 ? "stopover" : "connection"}.</strong>
-                If one flight is late and you miss the next, that airline owes you nothing. ${nights > 0
-                    ? "A night or more in between makes this low-risk."
-                    : "Leave at least 3 hours each time, and more if you need to collect and re-check bags."}
-                Check each ticket's baggage allowance, as budget fares often exclude hold bags.
-            </div>
-        `;
-    } else if (stops > 1) {
-        html += `<p class="hint">No ${stops}-stop split found in the route data within a sensible detour. Try fewer stops.</p>`;
-    } else {
-        html += `<p class="hint">No split found for this pair, even as an estimate. The airports may be too close together, or not covered by the route data.</p>`;
+                <strong>Separate tickets = you're on your own at each stop.</strong>
+                If one flight is late and you miss the next, that airline owes you nothing. ${ctx.minStay > 0
+                    ? "A night or more at each stop makes this low-risk."
+                    : "For same-day connections leave at least 3 hours, more if you need to collect and re-check bags."}
+                Hotel and bag costs are rough guides. Check each country's visa rules for your passport: some need a visa or
+                transit permit even for a short stop (the US needs an ESTA just to change planes).
+            </div>`;
     }
 
     resultsPanel.innerHTML = html;
     resultsPanel.classList.add("open");
-
-    function drawSplit(i) {
-        clearRoute();
-        const s = splits[i];
-        if (!s) {
-            markPoint(a, "From");
-            markPoint(b, "To");
-            fitTo(drawLeg(a, b));
-            return;
-        }
-        const pts = [];
-        for (let j = 0; j < s.path.length - 1; j++) pts.push(...drawLeg(s.path[j], s.path[j + 1]));
-        markPoint(s.o, "From");
-        markPoint(s.d, "To");
-        s.hubs.forEach((h, j) => markPoint(h, s.hubs.length > 1 ? `Stop ${j + 1}` : "Stopover", "hub"));
-        fitTo(pts);
-    }
-
-    resultsPanel.querySelectorAll(".option").forEach(el => {
-        el.addEventListener("click", (e) => {
-            if (e.target.closest("a, input, label")) return; // don't refit the map while typing a price
-            if (el.classList.contains("selected")) return;
-            resultsPanel.querySelectorAll(".option").forEach(o => o.classList.remove("selected"));
-            el.classList.add("selected");
-            drawSplit(+el.dataset.idx);
-        });
-    });
-
-    drawSplit(0);
-    updateTotals();
-    applySort();
+    renderList();
+    updateHash();
     fetchFares(++searchSeq);
+}
+
+// ---- Presets and sharing -------------------------------------------------
+const PRESETS = {
+    cheapest: { days: 2, stops: 2, stay: 0, rank: 0 },
+    balanced: { days: 5, stops: 2, stay: 1, rank: 50 },
+    explorer: { days: 10, stops: 3, stay: 2, rank: 100 },
+};
+document.querySelectorAll("[data-preset]").forEach(btn => btn.addEventListener("click", () => {
+    const p = PRESETS[btn.dataset.preset];
+    daysInput.value = String(p.days);
+    stopsInput.value = String(p.stops);
+    minStayInput.value = String(p.stay);
+    rankWeight = p.rank;
+    try { localStorage.setItem("rankWeight", String(rankWeight)); } catch { /* storage blocked */ }
+    document.querySelectorAll("[data-preset]").forEach(b => b.classList.toggle("active", b === btn));
+    runSearch();
+}));
+
+// The search lives in the URL (#from=LHR&to=HAN&…), so a link opens the same search.
+function updateHash() {
+    if (!current) return;
+    const q = new URLSearchParams({
+        from: current.a.iata, to: current.b.iata, date: current.ctx.depart, days: current.ctx.days,
+        stops: current.maxStops, stay: current.ctx.minStay, rank: rankWeight, nearby: nearbyInput.checked ? 1 : 0,
+    });
+    try { history.replaceState(null, "", "#" + q); } catch { /* sandboxed */ }
+}
+function applyHash() {
+    const q = new URLSearchParams(location.hash.slice(1));
+    if (!q.get("from") || !q.get("to") || !byIata.has(q.get("from")) || !byIata.has(q.get("to"))) return false;
+    setField("from", q.get("from"));
+    setField("to", q.get("to"));
+    const setSel = (el, v) => { if (v != null && [...el.options].some(o => o.value === v)) el.value = v; };
+    if (/^\d{4}-\d{2}-\d{2}$/.test(q.get("date") || "")) dateInput.value = q.get("date");
+    setSel(daysInput, q.get("days"));
+    setSel(stopsInput, q.get("stops"));
+    setSel(minStayInput, q.get("stay"));
+    if (q.has("rank")) rankWeight = Math.min(100, Math.max(0, +q.get("rank") || 0));
+    if (q.has("nearby")) nearbyInput.checked = q.get("nearby") === "1";
+    return true;
+}
+async function shareSearch(btn) {
+    updateHash();
+    const url = location.href;
+    try {
+        if (navigator.share && matchMedia("(pointer: coarse)").matches) await navigator.share({ title: "Stopover Nomad", url });
+        else { await navigator.clipboard.writeText(url); btn.textContent = "✓ Link copied"; }
+    } catch {
+        window.prompt("Copy this link:", url);
+    }
 }
 
 // ---- Search button -------------------------------------------------
@@ -986,13 +1420,16 @@ function runSearch() {
 
 searchBtn.addEventListener("click", runSearch);
 dateInput.addEventListener("change", () => { if (fromAirport && toAirport && resultsPanel.classList.contains("open")) runSearch(); });
-nightsInput.addEventListener("change", () => { if (fromAirport && toAirport && resultsPanel.classList.contains("open")) runSearch(); });
+daysInput.addEventListener("change", () => { if (fromAirport && toAirport && resultsPanel.classList.contains("open")) runSearch(); });
+minStayInput.addEventListener("change", () => { if (fromAirport && toAirport && resultsPanel.classList.contains("open")) runSearch(); });
 nearbyInput.addEventListener("change", () => { if (fromAirport && toAirport && resultsPanel.classList.contains("open")) runSearch(); });
 stopsInput.addEventListener("change", () => { if (fromAirport && toAirport && resultsPanel.classList.contains("open")) runSearch(); });
 
-// ---- Initial demo: London → Bangkok -------------------------------------------------
-setField("from", "LHR");
-setField("to", "BKK");
+// ---- First load: a shared link's search, or a London → Bangkok demo ---------------------
+if (!applyHash()) {
+    setField("from", "LHR");
+    setField("to", "BKK");
+}
 renderResults(fromAirport, toAirport);
 
-statusHint.textContent = `${AIRPORTS.length.toLocaleString()} airports · route data is a 2014 OpenFlights snapshot, so always check the live search links.`;
+statusHint.textContent = `${AIRPORTS.length.toLocaleString()} airports · without live prices, routes come from a 2014 snapshot, so always check the search links.`;

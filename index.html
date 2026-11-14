@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Stopover Nomad</title>
-<meta name="description" content="Find split-ticket routes — two separate flights via a stopover — that can be cheaper than one ticket." />
+<meta name="description" content="Fit stopovers into your journey: routes that cost less than flying direct and tick off more countries." />
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,7 +18,14 @@
 
 <div class="sidebar">
     <h1>Stopover Nomad</h1>
-    <p class="tagline">Two separate tickets via a stopover can beat one through-ticket. Find the split, check both prices, see the saving.</p>
+    <p class="tagline">Say how long you have to get there. We'll fit in stopovers that make the trip cheaper than flying direct, and add more countries on the way.</p>
+
+    <div class="presets" role="group" aria-label="Quick settings">
+        <span>Quick start</span>
+        <button type="button" data-preset="cheapest" title="Up to 2 days, quick connections, cheapest first">💷 Cheapest</button>
+        <button type="button" data-preset="balanced" title="Up to 5 days, a night at each stop, balanced">⚖️ Balanced</button>
+        <button type="button" data-preset="explorer" title="Up to 10 days, 2+ nights at each stop, most countries first">🌍 Explorer</button>
+    </div>
 
     <div class="search">
         <div class="field">
@@ -37,41 +44,59 @@
         </div>
         <div class="row">
             <div class="field">
-                <label for="stops-input">Stops</label>
-                <select id="stops-input">
-                    <option value="1">1 stop · 2 tickets</option>
-                    <option value="2">2 stops · 3 tickets</option>
-                    <option value="3">3 stops · 4 tickets</option>
+                <label for="days-input">Time to get there</label>
+                <select id="days-input">
+                    <option value="0">Same day</option>
+                    <option value="1">Up to 1 day</option>
+                    <option value="2">Up to 2 days</option>
+                    <option value="3" selected>Up to 3 days</option>
+                    <option value="5">Up to 5 days</option>
+                    <option value="7">Up to 1 week</option>
+                    <option value="10">Up to 10 days</option>
+                    <option value="14">Up to 2 weeks</option>
                 </select>
             </div>
             <div class="field">
-                <label for="nights-input">Nights per stop</label>
-                <select id="nights-input">
-                    <option value="0">Same day</option>
-                    <option value="1">1 night</option>
-                    <option value="2">2 nights</option>
-                    <option value="3">3 nights</option>
-                    <option value="5">5 nights</option>
-                    <option value="7">7 nights</option>
+                <label for="stops-input">Stops</label>
+                <select id="stops-input">
+                    <option value="1">Up to 1 stop</option>
+                    <option value="2" selected>Up to 2 stops</option>
+                    <option value="3">Up to 3 stops</option>
                 </select>
             </div>
+        </div>
+        <div class="field">
+            <label for="minstay-input">Time at each stop</label>
+            <select id="minstay-input">
+                <option value="0">Any — a quick connection is fine</option>
+                <option value="1" selected>At least 1 night</option>
+                <option value="2">At least 2 nights</option>
+                <option value="3">At least 3 nights</option>
+            </select>
         </div>
         <label class="check">
             <input id="nearby-input" type="checkbox" checked>
             Include nearby airports (within 100 km)
         </label>
-        <button id="search-btn">Find split tickets</button>
+        <label class="check">
+            <input id="costs-input" type="checkbox" checked>
+            Add hotel costs at each stop (rough guide)
+        </label>
+        <label class="check">
+            <input id="bags-input" type="checkbox">
+            I'm taking a hold bag (adds budget-airline bag fees)
+        </label>
+        <details class="visited">
+            <summary>Countries you've been to <span id="visited-count"></span></summary>
+            <p class="hint">Routes through countries you haven't visited rank higher. Saved in this browser only.</p>
+            <input id="visited-input" type="text" list="visited-options" placeholder="Add a country, e.g. France" autocomplete="off">
+            <datalist id="visited-options"></datalist>
+            <div id="visited-list" class="chips"></div>
+        </details>
+        <button id="search-btn" type="button">Find routes</button>
     </div>
 
     <div id="results" class="results"></div>
-
-    <div class="legend">
-        <div class="legend-title">Airport connectivity</div>
-        <div class="legend-row"><span class="legend-dot" style="background:#22c55e"></span>Major hub (15+ routes)</div>
-        <div class="legend-row"><span class="legend-dot" style="background:#f59e0b"></span>Moderate (5–14 routes)</div>
-        <div class="legend-row"><span class="legend-dot" style="background:#ef4444"></span>Limited (1–4 routes)</div>
-        <div class="legend-row"><span class="legend-dot" style="background:#cbd5e1"></span>No route data</div>
-    </div>
 
     <p class="hint" id="status-hint">Loading airport data…</p>
 </div>
@@ -81,6 +106,8 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <script src="airports.js"></script>
 <script src="routes.js"></script>
+<script src="places.js"></script>
+<script src="planner.js"></script>
 <script src="script.js"></script>
 
 </body>
