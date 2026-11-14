@@ -57,32 +57,49 @@ const map = L.map("map", {
 }).setView([20, 10], 2);
 
 map.attributionControl.setPrefix(false);
-// Basemap: Esri Light Gray (no API key needed — CARTO's free tiles now show an
-// "API KEY REQUIRED" watermark). Labels come from a separate reference layer.
-// If Esri tiles fail repeatedly, fall back to standard OpenStreetMap tiles.
-const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
-const baseLayer = L.tileLayer(ESRI + "World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 16,
-    noWrap: true,
-    attribution: 'Tiles &copy; <a href="https://www.esri.com">Esri</a> — Esri, HERE, Garmin, &copy; OpenStreetMap contributors'
-}).addTo(map);
+
+// Basemaps: Esri tiles need no API key. Satellite (default) with country and city labels on
+// top, or a clean light map. Attribution is required by the licence; it's kept, but shrunk to
+// one quiet line that expands on hover (see .leaflet-control-attribution in style.css).
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
 map.createPane("labels");                       // above the basemap, below dots and routes
 map.getPane("labels").style.zIndex = 350;
 map.getPane("labels").style.pointerEvents = "none";
-const labelLayer = L.tileLayer(ESRI + "World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 16,
-    noWrap: true,
-    pane: "labels"
-}).addTo(map);
+const BASEMAPS = {
+    Satellite: L.layerGroup([
+        L.tileLayer(ESRI + "World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+            maxZoom: 17, noWrap: true, className: "tiles-satellite",
+            attribution: "Imagery &copy; Esri, Maxar, Earthstar Geographics",
+        }),
+        L.tileLayer("https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", {
+            maxZoom: 17, noWrap: true, pane: "labels", attribution: "Labels &copy; Esri",
+        }),
+    ]),
+    Light: L.layerGroup([
+        L.tileLayer(ESRI + "Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+            maxZoom: 16, noWrap: true, attribution: "&copy; Esri, HERE, Garmin, OpenStreetMap contributors",
+        }),
+        L.tileLayer(ESRI + "Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}", { maxZoom: 16, noWrap: true, pane: "labels" }),
+    ]),
+};
+let basemapName = "Satellite";
+try { if (BASEMAPS[localStorage.getItem("basemap")]) basemapName = localStorage.getItem("basemap"); } catch { /* storage blocked */ }
+BASEMAPS[basemapName].addTo(map);
+document.getElementById("map").classList.toggle("dark-map", basemapName === "Satellite");
+L.control.layers(BASEMAPS, null, { position: "topright" }).addTo(map);
+map.on("baselayerchange", e => {
+    document.getElementById("map").classList.toggle("dark-map", e.name === "Satellite");
+    try { localStorage.setItem("basemap", e.name); } catch { /* storage blocked */ }
+});
 
+// If tiles keep failing (e.g. Esri unreachable), fall back to OpenStreetMap.
 let tileErrors = 0;
-baseLayer.on("tileerror", () => {
-    if (++tileErrors !== 6) return;
-    map.removeLayer(baseLayer);
-    map.removeLayer(labelLayer);
+map.on("tileerror", () => {
+    if (++tileErrors !== 8) return;
+    Object.values(BASEMAPS).forEach(l => map.removeLayer(l));
+    document.getElementById("map").classList.remove("dark-map");
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        noWrap: true,
+        maxZoom: 19, noWrap: true,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }).addTo(map);
 });
@@ -106,32 +123,19 @@ function connectionCount(iata) {
 }
 
 // ---- Render every airport as a canvas dot, coloured by connectivity ------------------------
-const sizeByType = {
-    large_airport:  { radius: 4.2, weight: 1 },
-    medium_airport: { radius: 2.8, weight: 0 },
-    small_airport:  { radius: 1.8, weight: 0 }
-};
-
-function connectivityColor(count) {
-    if (count === 0) return { color: "#cbd5e1", fillOpacity: 0.5 };
-    if (count < 5)   return { color: "#ef4444", fillOpacity: 0.75 };
-    if (count < 15)  return { color: "#f59e0b", fillOpacity: 0.8 };
-    return               { color: "#22c55e", fillOpacity: 0.85 };
-}
 
 const airportLayer = L.layerGroup().addTo(map);
 
+// Airports with routes, as small soft dots: bigger for bigger hubs. Click one to use it.
 AIRPORTS.forEach(a => {
-    const size = sizeByType[a.type] || sizeByType.small_airport;
     const conns = connectionCount(a.iata);
-    const c = connectivityColor(conns);
+    if (!conns) return;
     const m = L.circleMarker([a.lat, a.lon], {
-        radius: size.radius,
-        color: c.color,
-        fillColor: c.color,
-        fillOpacity: c.fillOpacity,
-        weight: size.weight,
-        opacity: 0.9
+        radius: conns >= 60 ? 3.2 : conns >= 15 ? 2.2 : 1.5,
+        stroke: false,
+        fillColor: "#e0f2fe",
+        fillOpacity: conns >= 15 ? 0.65 : 0.35,
+        className: "airport-dot",
     });
 
     const connLabel = conns > 0 ? `${conns} nonstop route${conns === 1 ? "" : "s"}` : "no route data";
@@ -361,27 +365,58 @@ function clearRoute() {
     endpointMarkers.clearLayers();
 }
 
-function drawLeg(a, b, color = "#2563eb") {
+// Each flight gets its own colour, with a soft glow and a moving dashed "flight path".
+const LEG_COLOURS = ["#ff4d8d", "#ffb020", "#2ee6c5", "#8b7bff", "#4fc3ff"];
+const routeRenderer = L.svg({ padding: 0.5 });   // SVG so the dashes can animate (dots stay on canvas)
+
+function drawLeg(a, b, i = 0, faint = false) {
+    const color = LEG_COLOURS[i % LEG_COLOURS.length];
     const segs = splitAtAntimeridian(greatCirclePoints(a, b));
-    L.polyline(segs, { color, weight: 10, opacity: 0.08, interactive: false }).addTo(routeLayers);
-    L.polyline(segs, { color, weight: 4, opacity: 0.9, lineJoin: "round", interactive: false }).addTo(routeLayers);
+    const base = { renderer: routeRenderer, interactive: false, lineCap: "round", lineJoin: "round" };
+    if (faint) {
+        L.polyline(segs, { ...base, color: "#ffffff", weight: 1.5, opacity: 0.35, dashArray: "2 6" }).addTo(routeLayers);
+        return segs.flat();
+    }
+    L.polyline(segs, { ...base, color, weight: 14, opacity: 0.18 }).addTo(routeLayers);
+    L.polyline(segs, { ...base, color, weight: 4, opacity: 0.95 }).addTo(routeLayers);
+    L.polyline(segs, { ...base, color: "#ffffff", weight: 2, opacity: 0.9, dashArray: "1 14", className: "flight-flow" }).addTo(routeLayers);
     return segs.flat();
 }
 
-function markPoint(a, label, cls = "") {
+// A pin with a label: kind = "from" | "to" | "stop"; note e.g. "2 nights".
+function markPoint(a, kind, num, note = "") {
+    const badge = kind === "stop" ? `<span class="pin-num">${num}</span>` : `<span class="pin-dot"></span>`;
+    const label = `${flag(a.country)}<b>${esc(placeName(a))}</b>${note ? `<i>${esc(note)}</i>` : ""}`;
     const icon = L.divIcon({
-        className: "custom-marker",
-        html: `<div class="dot ${cls}"></div>`,
-        iconSize: [14, 14],
-        iconAnchor: [7, 7]
+        className: `map-pin pin-${kind}`,
+        html: `${badge}<span class="pin-label">${label}</span>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
     });
-    L.marker([a.lat, a.lon], { icon, zIndexOffset: 1000 })
-        .bindTooltip(`${esc(label)}: ${esc(a.iata)} — ${placeLabel(a)}`, { direction: "top", offset: [0, -8] })
+    L.marker([a.lat, a.lon], { icon, zIndexOffset: kind === "stop" ? 900 : 1000, keyboard: false })
+        .bindTooltip(`${esc(a.iata)} — ${esc(a.name)}`, { direction: "top", offset: [0, -12] })
         .addTo(endpointMarkers);
 }
 
+// Pins near the right-hand edge put their label on the left, so it isn't cut off.
+function updatePinSides() {
+    const w = map.getSize().x;
+    endpointMarkers.eachLayer(m => {
+        const el = m.getElement();
+        if (el) el.classList.toggle("label-left", map.latLngToContainerPoint(m.getLatLng()).x > w - 190);
+    });
+}
+map.on("moveend zoomend resize", updatePinSides);
+
+// Extra room on the right so the city labels beside each pin aren't cut off.
 function fitTo(points) {
-    map.fitBounds(L.latLngBounds(points), { padding: [60, 60], maxZoom: 7 });
+    const w = map.getSize().x;
+    map.fitBounds(L.latLngBounds(points), {
+        paddingTopLeft: [Math.min(70, w * 0.12), 70],
+        paddingBottomRight: [Math.min(170, w * 0.32), 50],
+        maxZoom: 6,
+    });
+    updatePinSides();
 }
 
 // ---- Route data helpers -------------------------------------------------
@@ -1186,13 +1221,22 @@ function routeCardHtml(route, a, b) {
         </div>`;
 }
 
+// The selected route in colour, with the other options shown faintly behind it.
 function drawRoute(r) {
     clearRoute();
+    if (current) {
+        const others = [...resultsPanel.querySelectorAll(".option:not([hidden])")]
+            .map(el => current.routes[+el.dataset.idx]).filter(x => x && x !== r).slice(0, 8);
+        others.forEach(o => { for (let j = 0; j < o.path.length - 1; j++) drawLeg(o.path[j], o.path[j + 1], 0, true); });
+    }
     const pts = [];
-    for (let j = 0; j < r.path.length - 1; j++) pts.push(...drawLeg(r.path[j], r.path[j + 1]));
-    markPoint(r.o, "From");
-    markPoint(r.d, "To");
-    r.hubs.forEach((h, j) => markPoint(h, r.hubs.length > 1 ? `Stop ${j + 1}` : "Stopover", "hub"));
+    for (let j = 0; j < r.path.length - 1; j++) pts.push(...drawLeg(r.path[j], r.path[j + 1], j));
+    markPoint(r.o, "from");
+    markPoint(r.d, "to");
+    r.hubs.forEach((h, j) => {
+        const n = r.legs[j + 1] && r.legs[j] && r.legs[j + 1].date && r.legs[j].date ? dayDiff(r.legs[j + 1].date, r.legs[j].date) : null;
+        markPoint(h, "stop", j + 1, n == null ? "" : n === 0 ? "connect" : `${n} night${n > 1 ? "s" : ""}`);
+    });
     fitTo(pts);
 }
 

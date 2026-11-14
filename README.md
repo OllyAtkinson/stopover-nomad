@@ -13,7 +13,23 @@ and add two countries to your list.
 - **Time at each stop**: the shortest stay you want at each stopover, from a quick connection up
   to 3 nights.
 - One slider ranks every option, the direct flight included, from **cheapest** to **most new
-  countries**.
+  countries**. Countries you've already been to don't count, and well-known stopover cities
+  (Istanbul, Dubai, Singapore…) get a small boost.
+- Totals can include a rough hotel cost for each night at a stop and, if you're taking a hold
+  bag, typical bag fees on budget airlines.
+- Quick-start presets set everything in one tap. The search is kept in the URL, so the Share
+  button gives a link that opens the same search.
+
+## Where routes come from
+
+- **Without prices**, stopover routes come from a 2014 OpenFlights route snapshot, so some may no
+  longer run. Russia, Belarus and Ukraine are never suggested as stopovers.
+- **With prices on**, the app also asks where you can fly cheaply from your origin, and from where
+  cheaply on to your destination. Cities on both lists become extra stopover routes. Routes where
+  nobody has priced a flight lately are hidden behind a "show" button, because they probably
+  don't run.
+- Prices are looked up by city (LON covers all six London airports). City names come from
+  `places.js`, which is built from Travelpayouts' public data by `scripts/build-places.js`.
 
 ## How prices work
 
@@ -54,6 +70,11 @@ To keep the site on GitHub Pages and host only the API on Vercel, add this line 
 ```html
 <script>window.PRICE_API_URL = "https://your-app.vercel.app/api/prices";</script>
 ```
+
+## Map
+
+Esri satellite imagery (or a light map, switchable from the top-right) needs no API key. The
+licence attribution is kept but shrunk to one line that expands on hover.
 
 ## Tests
 

@@ -442,7 +442,7 @@ button:hover {
 }
 
 .leaflet-container {
-    background: #eef2f7;
+    background: #0b1d33;
     font-family: Inter, system-ui, sans-serif;
 }
 
@@ -453,58 +453,8 @@ button:hover {
     overflow: hidden;
 }
 
-/* Attribution is required by the OSM/CARTO tile licence — kept, just made quiet */
-.leaflet-control-attribution {
-    font-size: 10px;
-    background: rgba(255,255,255,.7) !important;
-}
 
-/* Endpoint markers */
-.custom-marker .dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #111827;
-    box-shadow: 0 0 0 5px rgba(17,24,39,0.18);
-}
 
-.custom-marker .dot.hub {
-    background: #2563eb;
-    box-shadow: 0 0 0 5px rgba(37,99,235,0.22);
-}
-
-/* Connectivity legend */
-.legend {
-    margin-top: 22px;
-    padding-top: 16px;
-    border-top: 1px solid #f3f4f6;
-    flex-shrink: 0;
-}
-
-.legend-title {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: #9ca3af;
-    font-weight: 600;
-    margin-bottom: 8px;
-}
-
-.legend-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    color: #4b5563;
-    margin-bottom: 5px;
-}
-
-.legend-dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
 
 /* Airport popup */
 .airport-popup {
@@ -733,3 +683,76 @@ img.flag {
 .stay-cost { font-weight: 400; color: #7c3aed; margin-left: 4px; }
 .hidden-routes:empty { display: none; }
 .hidden-routes .link-like { margin-right: 4px; }
+
+/* ---- Map ---- */
+/* Satellite imagery: a touch darker and richer so routes and labels pop. */
+.tiles-satellite { filter: brightness(.82) saturate(1.15) contrast(1.05); }
+#map:not(.dark-map) .leaflet-container, #map:not(.dark-map) { background: #eef2f7; }
+
+/* Licence attribution: required, so kept — one small line that expands on hover. */
+.leaflet-control-attribution {
+    max-width: 46px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 9.5px;
+    line-height: 1.6;
+    padding: 0 6px !important;
+    border-radius: 8px 0 0 0;
+    background: rgba(15, 23, 42, .55) !important;
+    color: rgba(255, 255, 255, .75) !important;
+    transition: max-width .25s;
+}
+.leaflet-control-attribution::before { content: "ⓘ "; }
+.leaflet-control-attribution:hover { max-width: 520px; }
+.leaflet-control-attribution a { color: #bae6fd !important; }
+
+/* Glassy controls */
+.leaflet-control-zoom a, .leaflet-control-layers {
+    background: rgba(15, 23, 42, .72) !important;
+    color: #f8fafc !important;
+    border: none !important;
+    backdrop-filter: blur(6px);
+}
+.leaflet-control-zoom a:hover { background: rgba(30, 41, 59, .9) !important; }
+.leaflet-control-layers { border-radius: 10px !important; box-shadow: 0 6px 18px rgba(0,0,0,.18) !important; }
+.leaflet-control-layers-toggle { filter: invert(1) brightness(1.4); width: 36px !important; height: 36px !important; }
+.leaflet-control-layers-expanded { padding: 8px 12px 8px 8px !important; font-size: 12.5px; }
+#map:not(.dark-map) .leaflet-control-zoom a, #map:not(.dark-map) .leaflet-control-layers { background: rgba(255,255,255,.92) !important; color: #111827 !important; }
+#map:not(.dark-map) .leaflet-control-layers-toggle { filter: none; }
+
+/* Airport dots */
+#map:not(.dark-map) .airport-dot { fill: #64748b; }
+
+/* Moving "flight path" dashes along the selected route */
+.flight-flow { animation: flight-flow 1.6s linear infinite; }
+@keyframes flight-flow { to { stroke-dashoffset: -30; } }
+@media (prefers-reduced-motion: reduce) { .flight-flow { animation: none; } }
+
+/* Pins: a dot or stop number, and a label with flag, city and nights */
+.map-pin { background: none; border: none; }   /* Leaflet positions it absolutely; keep that */
+.map-pin .pin-dot, .map-pin .pin-num {
+    position: absolute; left: 0; top: 0;
+    width: 22px; height: 22px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font: 700 11px/1 Inter, system-ui, sans-serif; color: #fff;
+    box-shadow: 0 0 0 3px rgba(255,255,255,.9), 0 4px 14px rgba(0,0,0,.45);
+}
+.pin-from .pin-dot { background: #0f172a; }
+.pin-to .pin-dot { background: #0f172a; }
+.pin-from .pin-dot::after, .pin-to .pin-dot::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #fff; }
+.pin-to .pin-dot::after { background: #ff4d8d; }
+.pin-stop .pin-num { background: linear-gradient(135deg, #ff4d8d, #8b7bff); }
+.map-pin .pin-label {
+    position: absolute; left: 28px; top: 1px;
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 9px 3px 6px; border-radius: 999px;
+    background: rgba(15, 23, 42, .82); color: #f8fafc;
+    font: 500 11.5px/1.4 Inter, system-ui, sans-serif; white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0,0,0,.3);
+    backdrop-filter: blur(4px);
+}
+.map-pin .pin-label b { font-weight: 700; }
+.map-pin .pin-label i { font-style: normal; color: #fbcfe8; }
+.map-pin .pin-label img.flag { width: 15px; height: 11px; }
+.map-pin.label-left .pin-label { left: auto; right: 28px; }
